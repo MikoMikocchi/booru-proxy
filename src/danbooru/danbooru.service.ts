@@ -50,7 +50,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     query: string,
     clientId?: string,
   ): Promise<DanbooruResponse> {
-    this.logger.log(`Processing job ${jobId} for query: ${query}`, jobId)
+    this.logger.log(`Processing job ${jobId} for query: ${query.replace(/./g, '*')}`, jobId)
 
     try {
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true

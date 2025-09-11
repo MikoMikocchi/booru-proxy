@@ -125,6 +125,25 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                   return
                 }
 
+                // Validate API key presence for authentication
+                if (!requestDto.apiKey) {
+                  const jobId = requestDto.jobId
+                  this.logger.warn(`Missing API key for job ${jobId}`, jobId)
+                  await this.danbooruService.publishResponse(jobId, {
+                    type: 'error',
+                    jobId,
+                    error: 'Missing API key - authentication required',
+                  })
+                  await addToDLQ(
+                    this.redis,
+                    jobId,
+                    'Missing API key',
+                    requestDto.query,
+                  )
+                  await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+                  return
+                }
+
                 const { jobId, query } = requestDto
 
                 // Deduplication check with per-item TTL

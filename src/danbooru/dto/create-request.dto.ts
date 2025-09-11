@@ -3,14 +3,14 @@ import {
   IsNotEmpty,
   Matches,
   MaxLength,
-  Length,
   IsOptional,
+  IsUUID,
 } from 'class-validator'
 
 export class CreateRequestDto {
   @IsNotEmpty()
   @IsString()
-  @Length(1, 36, { message: 'jobId must be between 1 and 36 characters' })
+  @IsUUID('all', { message: 'jobId must be a valid UUID' })
   jobId: string
 
   @IsNotEmpty()
@@ -21,6 +21,11 @@ export class CreateRequestDto {
       'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags), no negation (~) or other specials, starting with alphanumeric or underscore, max 100 chars',
   })
   query: string
+
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(100)
+  apiKey: string
 
   @IsOptional()
   @IsString()
