@@ -23,7 +23,7 @@ import {
 export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisStreamConsumer.name)
   private running = true
-  private pendingPromises: Promise<unknown>[] = []
+  private pendingPromises: Promise<void>[] = []
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -83,78 +83,74 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
         for (const [key, messages] of streams) {
           const messagesTyped = messages
 
-          const promises: Promise<void>[] = messagesTyped.map(
-            async ([id, fields]) => {
-              this.pendingPromises.push(
-                (async () => {
-                  const jobData: { [key: string]: string } = {}
-                  for (let i = 0; i < fields.length; i += 2) {
-                    jobData[fields[i]] = fields[i + 1]
-                  }
+          const promises: Promise<void>[] = messagesTyped.map(([id, fields]) => {
+            const innerPromise = (async () => {
+              const jobData: { [key: string]: string } = {}
+              for (let i = 0; i < fields.length; i += 2) {
+                jobData[fields[i]] = fields[i + 1]
+              }
 
-                  const requestDto = plainToClass(CreateRequestDto, jobData)
-                  const errors = await validate(requestDto)
-                  if (errors.length > 0) {
-                    const jobId = jobData.jobId || 'unknown'
-                    const maskedQuery = jobData.query
-                      ? jobData.query.replace(/./g, '*')
-                      : '**'
-                    this.logger.warn(
-                      `Validation error for job ${jobId}: ${JSON.stringify(errors)}, query: ${maskedQuery}`,
-                      jobId,
-                    )
-                    await this.danbooruService.publishResponse(jobId, {
-                      type: 'error',
-                      jobId,
-                      error: 'Invalid request format',
-                    })
-                    // Add to dead-letter queue for permanent validation error
-                    await addToDLQ(
-                      this.redis,
-                      jobId,
-                      'Invalid request format',
-                      jobData.query || '',
-                    )
-                    await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
-                    return
-                  }
+              const requestDto = plainToClass(CreateRequestDto, jobData)
+              const errors = await validate(requestDto)
+              if (errors.length > 0) {
+                const jobId = jobData.jobId || 'unknown'
+                const maskedQuery = jobData.query
+                  ? jobData.query.replace(/./g, '*')
+                  : '**'
+                this.logger.warn(
+                  `Validation error for job ${jobId}: ${JSON.stringify(errors)}, query: ${maskedQuery}`,
+                  jobId,
+                )
+                await this.danbooruService.publishResponse(jobId, {
+                  type: 'error',
+                  jobId,
+                  error: 'Invalid request format',
+                })
+                // Add to dead-letter queue for permanent validation error
+                await addToDLQ(
+                  this.redis,
+                  jobId,
+                  'Invalid request format',
+                  jobData.query || '',
+                )
+                await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+                return
+              }
 
-                  const { jobId, query } = requestDto
+              const { jobId, query } = requestDto
 
-                  // Deduplication check with per-item TTL
-                  const processedKey = `processed:${jobId}`
-                  const isDuplicate = await this.redis.exists(processedKey)
-                  if (isDuplicate) {
-                    this.logger.warn(
-                      `Duplicate job ${jobId} detected, skipping`,
-                      jobId,
-                    )
-                    await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
-                    return
-                  }
+              // Deduplication check with per-item TTL
+              const processedKey = `processed:${jobId}`
+              const isDuplicate = await this.redis.exists(processedKey)
+              if (isDuplicate) {
+                this.logger.warn(
+                  `Duplicate job ${jobId} detected, skipping`,
+                  jobId,
+                )
+                await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+                return
+              }
 
-                  // Mark as processed with TTL
-                  await this.redis.setex(processedKey, DEDUP_TTL_SECONDS, '1')
+              // Mark as processed with TTL
+              await this.redis.setex(processedKey, DEDUP_TTL_SECONDS, '1')
 
-                  this.logger.log(
-                    `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
-                    jobId,
-                  )
-
-                  await this.danbooruService.processRequest(jobId, query)
-                  // ACK the message
-                  await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
-                })(),
+              this.logger.log(
+                `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
+                jobId,
               )
 
-              return promises[messagesTyped.indexOf([id, fields])]
-            },
-          )
+              // Ignore return value for shutdown purposes
+              await this.danbooruService.processRequest(jobId, query)
+              // ACK the message
+              await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+            })()
+
+            this.pendingPromises.push(innerPromise)
+            return innerPromise
+          })
 
           await Promise.all(promises)
-          this.pendingPromises = this.pendingPromises.filter(
-            p => p !== promises[0],
-          )
+          this.pendingPromises = this.pendingPromises.filter(p => !promises.includes(p))
         }
       } catch (error) {
         if (this.running) {
