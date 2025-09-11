@@ -101,13 +101,9 @@ export class DanbooruApiService {
 
 	private sanitizeTags(tags: string): string {
 		if (!tags) return ''
-		return tags
-			.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-			.replace(/<[^>]*>/g, '')
-			.replace(/&/g, '&')
-			.replace(/</g, '<')
-			.replace(/>/g, '>')
-			.replace(/"/g, '"')
-			.replace(/'/g, '&#x27;')
+		const xss = require('xss')({
+			allow: false, // Strict mode, no HTML allowed
+		})
+		return xss(tags)
 	}
 }
