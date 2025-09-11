@@ -37,8 +37,9 @@ export class CacheService {
 	}
 
 	private getCacheKey(query: string): string {
-		// Hash query for shorter key
-		const hash = crypto.createHash('md5').update(query).digest('hex')
+		// Normalize query for non-random caching: trim, lowercase, normalize spaces
+		const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ').trim()
+		const hash = crypto.createHash('md5').update(normalizedQuery).digest('hex')
 		return `cache:danbooru:${hash}`
 	}
 }
