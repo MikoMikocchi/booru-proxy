@@ -2,6 +2,7 @@ import { Injectable, Inject, Logger } from '@nestjs/common'
 import Redis from 'ioredis'
 import { ConfigService } from '@nestjs/config'
 import { DanbooruSuccessResponse } from './interfaces/danbooru.interface'
+import * as crypto from 'crypto'
 
 @Injectable()
 export class CacheService {
@@ -36,8 +37,8 @@ export class CacheService {
 	}
 
 	private getCacheKey(query: string): string {
-		// Hash query for shorter key (simple hash for now, use crypto later)
-		const hash = require('crypto').createHash('md5').update(query).digest('hex')
+		// Hash query for shorter key
+		const hash = crypto.createHash('md5').update(query).digest('hex')
 		return `cache:danbooru:${hash}`
 	}
 }

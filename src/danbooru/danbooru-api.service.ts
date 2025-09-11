@@ -5,6 +5,7 @@ import { plainToClass } from 'class-transformer'
 import { validate, ValidationError } from 'class-validator'
 import { DanbooruPost } from './interfaces/danbooru-post.interface'
 import { API_TIMEOUT_MS } from '../common/constants'
+import xss from 'xss'
 
 interface DanbooruApiResponse {
 	data: DanbooruPost[]
@@ -101,9 +102,8 @@ export class DanbooruApiService {
 
 	private sanitizeTags(tags: string): string {
 		if (!tags) return ''
-		const xss = require('xss')({
-			allow: false, // Strict mode, no HTML allowed
+		return xss(tags, {
+			whiteList: {}, // Strict mode, no HTML tags allowed
 		})
-		return xss(tags)
 	}
 }
