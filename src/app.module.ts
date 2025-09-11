@@ -4,12 +4,12 @@ import { DanbooruModule } from './danbooru/danbooru.module'
 import { RedisModule } from './common/redis/redis.module'
 
 @Module({
-	imports: [
-		ConfigModule.forRoot({
-			isGlobal: true,
-		}),
-		DanbooruModule,
-		RedisModule,
-	],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    DanbooruModule,
+    RedisModule,
+  ],
 })
 export class AppModule {}

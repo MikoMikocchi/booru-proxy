@@ -46,9 +46,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
   }
 
   async processRequest(
-  	jobId: string,
-  	query: string,
-  	clientId?: string,
+    jobId: string,
+    query: string,
+    clientId?: string,
   ): Promise<DanbooruResponse> {
     this.logger.log(`Processing job ${jobId} for query: ${query}`, jobId)
 
@@ -57,13 +57,13 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
       const isAllowed = await this.checkRateLimit(jobId, clientId)
       if (!isAllowed) {
-      	const errorData: DanbooruErrorResponse = {
-      		type: 'error',
-      		jobId,
-      		error: 'Rate limit exceeded. Try again in 1 minute.',
-      	}
-      	await this.publishResponse(jobId, errorData)
-      	return errorData
+        const errorData: DanbooruErrorResponse = {
+          type: 'error',
+          jobId,
+          error: 'Rate limit exceeded. Try again in 1 minute.',
+        }
+        await this.publishResponse(jobId, errorData)
+        return errorData
       }
 
       const responseOrNull = await this.getCachedOrFetch(query, random, jobId)
@@ -95,21 +95,27 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
   }
 
-  private async checkRateLimit(jobId: string, clientId?: string): Promise<boolean> {
-  	const rateLimitPerMinute =
-  		this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
-  	const rateKey = clientId
-  		? `rate:danbooru:${clientId}`
-  		: `rate:danbooru:global`
-  	const isAllowed = await this.rateLimiterService.checkRateLimit(
-  		rateKey,
-  		rateLimitPerMinute,
-  		60, // 1 minute window
-  	)
-  	if (!isAllowed) {
-  		this.logger.warn(`Rate limit exceeded for job ${jobId} (client: ${clientId || 'global'})`, jobId)
-  	}
-  	return isAllowed
+  private async checkRateLimit(
+    jobId: string,
+    clientId?: string,
+  ): Promise<boolean> {
+    const rateLimitPerMinute =
+      this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
+    const rateKey = clientId
+      ? `rate:danbooru:${clientId}`
+      : `rate:danbooru:global`
+    const isAllowed = await this.rateLimiterService.checkRateLimit(
+      rateKey,
+      rateLimitPerMinute,
+      60, // 1 minute window
+    )
+    if (!isAllowed) {
+      this.logger.warn(
+        `Rate limit exceeded for job ${jobId} (client: ${clientId || 'global'})`,
+        jobId,
+      )
+    }
+    return isAllowed
   }
 
   private async getCachedOrFetch(

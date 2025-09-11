@@ -1,16 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing'
 import { DanbooruService } from '../src/danbooru/danbooru.service'
+import { AppModule } from '../src/app.module'
 import Redis from 'ioredis'
-import { GenericContainer, StartedTestContainer } from 'testcontainers'
+import {
+  GenericContainer,
+  StartedTestContainer,
+  TestContainers,
+} from 'testcontainers'
 import { ConfigModule } from '@nestjs/config'
 import nock from 'nock'
-import { plainToClass } from 'class-transformer'
-import { validate } from 'class-validator'
 import {
   DanbooruSuccessResponse,
   DanbooruErrorResponse,
 } from '../src/danbooru/interfaces/danbooru.interface'
-import { DanbooruPost } from '../src/danbooru/dto/danbooru-post.class'
 import { MAX_DLQ_RETRIES } from '../src/common/constants'
 
 describe('DanbooruService (e2e)', () => {
@@ -20,9 +22,10 @@ describe('DanbooruService (e2e)', () => {
 
   beforeAll(async () => {
     // Start Redis container
-    redisContainer = await new GenericContainer('redis:alpine')
+    const redisContainerInstance = await new GenericContainer('redis:alpine')
       .withExposedPorts(6379)
       .start()
+    redisContainer = redisContainerInstance
 
     // Get the actual mapped port
     const redisPort = redisContainer.getMappedPort(6379)
@@ -34,11 +37,8 @@ describe('DanbooruService (e2e)', () => {
     await redisClient.ping()
 
     const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule.forRoot({ isGlobal: true })],
-      providers: [
-        DanbooruService,
-        { provide: 'REDIS_CLIENT', useValue: redisClient },
-      ],
+      imports: [ConfigModule.forRoot({ isGlobal: true }), AppModule],
+      providers: [{ provide: 'REDIS_CLIENT', useValue: redisClient }],
     }).compile()
 
     service = module.get<DanbooruService>(DanbooruService)
@@ -159,7 +159,7 @@ describe('DanbooruService (e2e)', () => {
     const dlqMessage = dlqMessageList[0]
     const dlqFields: { [key: string]: string } = {}
     for (let i = 0; i < dlqMessage[1].length; i += 2) {
-    	dlqFields[dlqMessage[1][i]] = dlqMessage[1][i + 1]
+      dlqFields[dlqMessage[1][i]] = dlqMessage[1][i + 1]
     }
 
     expect(dlqFields.jobId).toBe(jobId)
@@ -262,7 +262,12 @@ describe('DanbooruService (e2e)', () => {
     expect(retryFields.query).toBe(extractedQuery)
 
     // Verify DLQ message was removed (acknowledged)
-    const remainingDlq = await redisClient.xread('STREAMS', 'danbooru-dlq', 0, 1)
+    const remainingDlq = await redisClient.xread(
+      'STREAMS',
+      'danbooru-dlq',
+      0,
+      1,
+    )
     expect(remainingDlq).toBeNull()
   }, 10000)
 

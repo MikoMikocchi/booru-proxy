@@ -7,14 +7,14 @@ import { RedisStreamConsumer } from './redis-stream.consumer'
 import { DlqConsumer } from './dlq.consumer'
 
 @Module({
-	providers: [
-		DanbooruService,
-		DanbooruApiService,
-		CacheService,
-		RateLimiterService,
-		RedisStreamConsumer,
-		DlqConsumer,
-	],
-	exports: [DanbooruService],
+  providers: [
+    DanbooruService,
+    DanbooruApiService,
+    CacheService,
+    RateLimiterService,
+    RedisStreamConsumer,
+    DlqConsumer,
+  ],
+  exports: [DanbooruService],
 })
 export class DanbooruModule {}
