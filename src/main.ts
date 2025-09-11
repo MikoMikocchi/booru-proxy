@@ -22,8 +22,8 @@ async function bootstrap() {
 	await app.startAllMicroservices()
 
 	const port = configService.get('PORT') || 3000
-	await app.listen(port)
-	console.log(`HTTP server listening on port ${port}`)
+	// No HTTP listen, only microservice with Redis transport
+	console.log('Microservice started with Redis transport')
 
 	process.on('SIGINT', async () => {
 		await app.close()

@@ -87,8 +87,9 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
 						const errors = await validate(requestDto)
 						if (errors.length > 0) {
 							const jobId = jobData.jobId || 'unknown'
+							const maskedQuery = jobData.query ? jobData.query.replace(/./g, '*') : '**'
 							this.logger.warn(
-								`Validation error for job ${jobId}: ${JSON.stringify(errors)}`,
+								`Validation error for job ${jobId}: ${JSON.stringify(errors)}, query: ${maskedQuery}`,
 								jobId,
 							)
 							await this.danbooruService.publishResponse(jobId, {
@@ -125,6 +126,11 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
 						// Mark as processed with TTL
 						await this.redis.sadd('processed_jobs', jobId)
 						await this.redis.expire('processed_jobs', DEDUP_TTL_SECONDS)
+
+						this.logger.log(
+							`Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
+							jobId,
+						)
 
 						await this.danbooruService.processRequest(jobId, query)
 						// ACK the message

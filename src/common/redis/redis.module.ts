@@ -1,6 +1,7 @@
 import { Module, Global } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import Redis from 'ioredis'
+import { parseRedisUrl } from '../utils/redis.util'
 
 @Global()
 @Module({
@@ -11,13 +12,13 @@ import Redis from 'ioredis'
 			useFactory: (configService: ConfigService) => {
 				const redisUrl =
 					configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
-				const url = new URL(redisUrl)
+				const parsedUrl = parseRedisUrl(redisUrl)
 				return new Redis({
-					host: url.hostname,
-					port: Number(url.port) || 6379,
-					username: url.username || undefined,
-					password: url.password || undefined,
-					tls: url.protocol === 'rediss:' ? {} : undefined,
+					host: parsedUrl.hostname,
+					port: Number(parsedUrl.port) || 6379,
+					username: parsedUrl.username || undefined,
+					password: parsedUrl.password || undefined,
+					tls: parsedUrl.protocol === 'rediss:' ? {} : undefined,
 				})
 			},
 			inject: [ConfigService],
