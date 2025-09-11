@@ -8,9 +8,9 @@ export class CreateRequestDto {
 	@IsNotEmpty()
 	@IsString()
 	@MaxLength(200)
-	@Matches(/^[a-z0-9_ \-:]+$/i, {
+	@Matches(/^[a-z0-9_ \-,:()]+$/i, {
 		message:
-			'Query can only contain lowercase letters, numbers, underscores, spaces, hyphens, plus signs, and colons',
+			'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags)',
 	})
 	query: string
 }

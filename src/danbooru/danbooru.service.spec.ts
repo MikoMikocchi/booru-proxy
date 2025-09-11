@@ -48,6 +48,7 @@ describe('DanbooruService', () => {
 		} as unknown as jest.Mocked<ConfigService>
 
 		mockRedisInstance = {
+			xgroup: jest.fn().mockResolvedValue('OK'),
 			xadd: jest.fn().mockResolvedValue('response-id'),
 			xdel: jest.fn().mockResolvedValue(1),
 			xreadgroup: jest.fn().mockResolvedValue(null),
@@ -69,11 +70,11 @@ describe('DanbooruService', () => {
 			providers: [
 				DanbooruService,
 				{ provide: ConfigService, useValue: mockConfigService },
+				{ provide: 'REDIS_CLIENT', useValue: mockRedisInstance },
 			],
 		}).compile()
 
 		service = module.get<DanbooruService>(DanbooruService)
-		;(service as any).redis = mockRedisInstance
 	})
 
 	afterEach(() => {
@@ -95,6 +96,8 @@ describe('DanbooruService', () => {
 			} as any
 
 			mockAxios.get.mockResolvedValue({ data: [mockPost] })
+			mockRedisInstance.get.mockResolvedValue(null)
+			mockRedisInstance.incr.mockResolvedValue(1)
 
 			const result = await service.processRequest(jobId, query)
 
@@ -115,8 +118,7 @@ describe('DanbooruService', () => {
 				source: 'https://source.com',
 				copyright: 'copyright',
 			})
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				1,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				RESPONSES_STREAM,
 				'*',
 				'type',
@@ -185,8 +187,7 @@ describe('DanbooruService', () => {
 				jobId,
 				error: 'Rate limit exceeded. Try again in 1 minute.',
 			})
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				1,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				RESPONSES_STREAM,
 				'*',
 				'type',
@@ -211,8 +212,7 @@ describe('DanbooruService', () => {
 				jobId,
 				error: 'Request failed with status code 401',
 			})
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				2,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				DLQ_STREAM,
 				'*',
 				'jobId',
@@ -236,8 +236,7 @@ describe('DanbooruService', () => {
 				jobId,
 				error: 'No posts found for the query',
 			})
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				2,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				DLQ_STREAM,
 				'*',
 				'jobId',
@@ -247,6 +246,34 @@ describe('DanbooruService', () => {
 				'query',
 				query,
 			)
+		})
+
+		it('should sanitize tags in response', async () => {
+			const mockPost = {
+				file_url: 'https://example.com/image.jpg',
+				tag_string_artist: 'artist',
+				tag_string_general: '<script>alert("xss")</script> tag1, tag2',
+				rating: 's',
+				source: 'https://source.com',
+				tag_string_copyright: 'copy <b>bold</b> right',
+			} as any
+
+			mockAxios.get.mockResolvedValue({ data: [mockPost] })
+			mockRedisInstance.get.mockResolvedValue(null)
+			mockRedisInstance.incr.mockResolvedValue(1)
+
+			const result = await service.processRequest('test-sanitize', 'test query')
+
+			expect(result).toEqual<DanbooruResponse>({
+				type: 'success',
+				jobId: 'test-sanitize',
+				imageUrl: 'https://example.com/image.jpg',
+				author: 'artist',
+				tags: 'alert("xss") tag1, tag2',
+				rating: 's',
+				source: 'https://source.com',
+				copyright: 'copy bold right',
+			})
 		})
 	})
 
@@ -278,8 +305,7 @@ describe('DanbooruService', () => {
 			await (service as any).startConsumer()
 
 			expect(classValidator.validate).toHaveBeenCalled()
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				1,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				RESPONSES_STREAM,
 				'*',
 				'type',
@@ -294,8 +320,7 @@ describe('DanbooruService', () => {
 				'danbooru-group',
 				'id',
 			)
-			expect(mockRedisInstance.xadd).toHaveBeenNthCalledWith(
-				2,
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				DLQ_STREAM,
 				'*',
 				'jobId',
@@ -304,6 +329,60 @@ describe('DanbooruService', () => {
 				'Invalid request format',
 				'query',
 				'hatsune_miku',
+			)
+		})
+
+		it('should handle invalid query with SQL-like injection', async () => {
+			const validationError = {
+				property: 'query',
+				constraints: { matches: 'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags)' },
+			} as any
+			;(classValidator.validate as jest.Mock).mockResolvedValue([
+				validationError,
+			])
+
+			const mockFields = ['jobId', 'test1', 'query', "'; DROP TABLE users; --"]
+			const mockMessage = ['id', mockFields] as any
+			const mockStream = [['danbooru:requests', [mockMessage]]] as any
+
+			let callCount = 0
+			mockRedisInstance.xreadgroup.mockImplementation(async () => {
+				callCount++
+				if (callCount === 1) {
+					return mockStream
+				} else {
+					;(service as any).running = false
+					return null
+				}
+			})
+
+			await (service as any).startConsumer()
+
+			expect(classValidator.validate).toHaveBeenCalled()
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
+				RESPONSES_STREAM,
+				'*',
+				'type',
+				'error',
+				'jobId',
+				'test1',
+				'error',
+				'Invalid request format',
+			)
+			expect(mockRedisInstance.xack).toHaveBeenCalledWith(
+				REQUESTS_STREAM,
+				'danbooru-group',
+				'id',
+			)
+			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
+				DLQ_STREAM,
+				'*',
+				'jobId',
+				'test1',
+				'error',
+				'Invalid request format',
+				'query',
+				"'; DROP TABLE users; --",
 			)
 		})
 

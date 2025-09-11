@@ -221,10 +221,10 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			const post: DanbooruPost = posts[0]
 			const imageUrl = post.file_url
 			const author = post.tag_string_artist ?? null
-			const tags = post.tag_string_general
+			const tags = this.sanitizeTags(post.tag_string_general)
 			const rating = post.rating
 			const source = post.source ?? null
-			const copyright = post.tag_string_copyright
+			const copyright = this.sanitizeTags(post.tag_string_copyright)
 
 			this.logger.log(
 				`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
@@ -269,6 +269,19 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		}
 	}
 
+	private sanitizeTags(tags: string): string {
+		if (!tags) return tags;
+		// Basic sanitization to remove potential HTML/JS
+		let sanitized = tags
+			.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+			.replace(/<[^>]*>/g, '');
+		sanitized = sanitized.replace(/&/g, '&');
+		sanitized = sanitized.replace(/</g, '<');
+		sanitized = sanitized.replace(/>/g, '>');
+		sanitized = sanitized.replace(/"/g, '"');
+		sanitized = sanitized.replace(/'/g, "'");
+		return sanitized;
+	}
 	private async publishResponse(jobId: string, data: DanbooruResponse) {
 		const responseKey = RESPONSES_STREAM
 		const message = { ...data }
