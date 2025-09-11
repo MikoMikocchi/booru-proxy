@@ -6,21 +6,22 @@ import { HealthModule } from './health/health.module'
 import { RedisModule } from './common/redis/redis.module'
 
 @Module({
-	imports: [
-		RedisModule,
-		ConfigModule.forRoot({
-			isGlobal: true,
-			validationSchema: Joi.object({
-				DANBOORU_LOGIN: Joi.string().required(),
-				DANBOORU_API_KEY: Joi.string().required(),
-				REDIS_URL: Joi.string().required(),
-			}),
-			validationOptions: {
-				abortEarly: true,
-			},
-		}),
-		DanbooruModule,
-		HealthModule,
-	],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validationSchema: Joi.object({
+        DANBOORU_LOGIN: Joi.string().required(),
+        DANBOORU_API_KEY: Joi.string().required(),
+        REDIS_URL: Joi.string().required(),
+        RATE_LIMIT_PER_MINUTE: Joi.number().default(60),
+        CACHE_TTL_SECONDS: Joi.number().default(3600),
+      }),
+      validationOptions: {
+        abortEarly: true,
+      },
+    }),
+    DanbooruModule,
+    HealthModule,
+  ],
 })
 export class AppModule {}
