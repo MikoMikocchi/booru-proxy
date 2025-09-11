@@ -89,10 +89,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				for (const stream of streams as any[]) {
 					const messages = stream[1] as [string, string[]][]
 
-					for (const message of messages) {
-						const id = message[0]
-						const fields = message[1]
-
+					const promises = messages.map(async ([id, fields]) => {
 						const jobData: { [key: string]: string } = {}
 						for (let i = 0; i < fields.length; i += 2) {
 							jobData[fields[i]] = fields[i + 1]
@@ -120,8 +117,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 								'query',
 								jobData.query || '',
 							)
-							await this.redis.xdel('danbooru:requests', id)
-							continue
+							await this.redis.xack('danbooru:requests', 'danbooru-group', id)
+							return
 						}
 
 						const { jobId, query } = requestDto
@@ -129,9 +126,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 						await this.processRequest(jobId, query)
 						// ACK the message
 						await this.redis.xack('danbooru:requests', 'danbooru-group', id)
-						// Remove if needed, but with group, xdel not necessary if ACKed
-						await this.redis.xdel('danbooru:requests', id)
-					}
+					})
+
+					await Promise.all(promises)
 				}
 			} catch (error) {
 				if (this.running) {
@@ -157,7 +154,14 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		this.logger.log(`Processing job ${jobId} for query: ${query}`)
 
 		try {
-			// Simple rate limiting: 1 call per minute for educational purpose
+			// Check cache first
+			const cached = await this.getCachedResponse(query)
+			if (cached) {
+				this.logger.log(`Cache hit for job ${jobId}`)
+				return cached
+			}
+
+			// Simple rate limiting: 1 call per minute for educational purpose (approximate 100/min)
 			const now = Date.now()
 			if (now - this.lastApiCall < 60000) {
 				const errorData: DanbooruErrorResponse = {
@@ -175,7 +179,13 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			const apiKey: string =
 				this.configService.get<string>('DANBOORU_API_KEY') ?? ''
 			if (!login || !apiKey) {
-				throw new Error('DANBOORU_LOGIN and DANBOORU_API_KEY must be set')
+				const errorData: DanbooruErrorResponse = {
+					type: 'error',
+					jobId,
+					error: 'DANBOORU_LOGIN and DANBOORU_API_KEY must be set',
+				}
+				await this.publishResponse(jobId, errorData)
+				return errorData
 			}
 			const auth = { username: login, password: apiKey }
 
@@ -233,6 +243,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				copyright,
 			}
 			await this.publishResponse(jobId, responseData)
+			// Cache the response for 1h
+			await this.setCache(query, responseData)
 			return responseData
 		} catch (error: unknown) {
 			const errorMessage =
@@ -268,5 +280,25 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		])
 		await this.redis.xadd(responseKey, '*', ...entries)
 		this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
+	}
+
+	private async getCachedResponse(
+		query: string,
+	): Promise<DanbooruSuccessResponse | null> {
+		const key = `cache:danbooru:${query.replace(/ /g, '_')}` // Sanitize key
+		const cached = await this.redis.get(key)
+		if (cached) {
+			return JSON.parse(cached) as DanbooruSuccessResponse
+		}
+		return null
+	}
+
+	private async setCache(
+		query: string,
+		response: DanbooruSuccessResponse,
+	): Promise<void> {
+		const key = `cache:danbooru:${query.replace(/ /g, '_')}`
+		await this.redis.setex(key, 3600, JSON.stringify(response)) // 1h TTL
+		this.logger.log(`Cached response for query: ${query}`)
 	}
 }
