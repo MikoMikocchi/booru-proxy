@@ -157,12 +157,13 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			}
 
 			// Distributed rate limiting: check calls per minute
+			const rateLimitPerMinute = this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || RATE_LIMIT_PER_MINUTE
 			const minuteKey = `rate:minute:${Math.floor(Date.now() / 60000)}`
 			const currentCount = await this.redis.incr(minuteKey)
 			if (currentCount === 1) {
 				await this.redis.expire(minuteKey, 60)
 			}
-			if (currentCount > RATE_LIMIT_PER_MINUTE) {
+			if (currentCount > rateLimitPerMinute) {
 				const errorData: DanbooruErrorResponse = {
 					type: 'error',
 					jobId,
@@ -187,8 +188,14 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			}
 			const auth = { username: login, password: apiKey }
 
+			const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
+			const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
+			let url = `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=${limit}`
+			if (random) {
+				url += '&random=true'
+			}
 			const response = await axios.get<DanbooruPost[]>(
-				`https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=1&random=true`,
+				url,
 				{
 					auth,
 					timeout: API_TIMEOUT_MS,
@@ -309,7 +316,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		response: DanbooruSuccessResponse,
 	): Promise<void> {
 		const key = `cache:danbooru:${encodeURIComponent(query)}`
-		await this.redis.setex(key, 3600, JSON.stringify(response)) // 1h TTL
+		const ttl = this.configService.get<number>('CACHE_TTL_SECONDS') || 3600
+		await this.redis.setex(key, ttl, JSON.stringify(response))
 		this.logger.log(`Cached response for query: ${query}`)
 	}
 }

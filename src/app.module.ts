@@ -12,12 +12,15 @@ import { RedisModule } from './common/redis/redis.module'
       validationSchema: Joi.object({
         DANBOORU_LOGIN: Joi.string().required(),
         DANBOORU_API_KEY: Joi.string().required(),
-        REDIS_URL: Joi.string().required(),
+        REDIS_URL: Joi.string().default('redis://localhost:6379'),
         RATE_LIMIT_PER_MINUTE: Joi.number().default(60),
         CACHE_TTL_SECONDS: Joi.number().default(3600),
+        DANBOORU_LIMIT: Joi.number().default(1),
+        DANBOORU_RANDOM: Joi.boolean().default(true),
+        PORT: Joi.number().default(3000),
       }),
       validationOptions: {
-        abortEarly: true,
+        abortEarly: false,
       },
     }),
     DanbooruModule,
