@@ -139,12 +139,12 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
               await this.redis.setex(processedKey, DEDUP_TTL_SECONDS, '1')
 
               this.logger.log(
-                `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
-                jobId,
+              	`Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
+              	jobId,
               )
 
               // Ignore return value for shutdown purposes
-              await this.danbooruService.processRequest(jobId, query)
+              await this.danbooruService.processRequest(jobId, query, requestDto.clientId)
               // ACK the message
               await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
             })()

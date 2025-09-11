@@ -4,6 +4,7 @@ import {
 	Matches,
 	MaxLength,
 	Length,
+	IsOptional,
 } from 'class-validator'
 
 export class CreateRequestDto {
@@ -20,4 +21,12 @@ export class CreateRequestDto {
 			'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags), no negation (~) or other specials, starting with alphanumeric or underscore, max 100 chars',
 	})
 	query: string
+
+	@IsOptional()
+	@IsString()
+	@MaxLength(50)
+	@Matches(/^[a-zA-Z0-9_]{1,50}$/, {
+		message: 'clientId must be alphanumeric with underscores, max 50 chars',
+	})
+	clientId?: string
 }
