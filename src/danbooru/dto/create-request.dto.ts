@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, Matches } from 'class-validator'
+import { IsString, IsNotEmpty, Matches, MaxLength } from 'class-validator'
 
 export class CreateRequestDto {
 	@IsNotEmpty()
@@ -7,9 +7,10 @@ export class CreateRequestDto {
 
 	@IsNotEmpty()
 	@IsString()
-	@Matches(/^[a-z0-9_ ]+$/, {
+	@MaxLength(200)
+	@Matches(/^[a-z0-9_ \-:]+$/i, {
 		message:
-			'Query can only contain lowercase letters, numbers, underscores and spaces',
+			'Query can only contain lowercase letters, numbers, underscores, spaces, hyphens, plus signs, and colons',
 	})
 	query: string
 }

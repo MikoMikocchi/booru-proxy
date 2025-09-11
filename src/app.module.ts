@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import * as Joi from 'joi'
 import { DanbooruModule } from './danbooru/danbooru.module'
+import { HealthModule } from './health/health.module'
 
 @Module({
 	imports: [
@@ -17,6 +18,7 @@ import { DanbooruModule } from './danbooru/danbooru.module'
 			},
 		}),
 		DanbooruModule,
+		HealthModule,
 	],
 })
 export class AppModule {}

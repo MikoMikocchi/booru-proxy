@@ -4,18 +4,20 @@ import Redis from 'ioredis'
 
 @Injectable()
 export class RedisHealthIndicator {
-  constructor(private readonly healthIndicatorService: HealthIndicatorService) {}
+	constructor(
+		private readonly healthIndicatorService: HealthIndicatorService,
+	) {}
 
 	async isHealthy(key: string): Promise<HealthIndicatorResult> {
-		const indicator = this.healthIndicatorService.check(key);
+		const indicator = this.healthIndicatorService.check(key)
 		const redis = new Redis({ host: 'localhost', port: 6379 })
 		try {
 			await redis.ping()
-			return indicator.up();
+			return indicator.up()
 		} catch (e) {
-			return indicator.down('Redis not available');
+			return indicator.down('Redis not available')
 		} finally {
-      await redis.disconnect();
-    }
+			await redis.disconnect()
+		}
 	}
 }

@@ -20,6 +20,10 @@ import {
 	API_TIMEOUT_MS,
 	RETRY_DELAY_MS,
 	STREAM_BLOCK_MS,
+	RATE_LIMIT_PER_MINUTE,
+	REQUESTS_STREAM,
+	RESPONSES_STREAM,
+	DLQ_STREAM,
 } from '../common/constants'
 
 @Injectable()
@@ -27,7 +31,6 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private readonly logger = new Logger(DanbooruService.name)
 	private readonly redis: Redis
 	private running = true
-	private lastApiCall = 0
 
 	constructor(private configService: ConfigService) {
 		const redisUrl: string =
@@ -48,7 +51,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		try {
 			await this.redis.xgroup(
 				'CREATE',
-				'danbooru:requests',
+				REQUESTS_STREAM,
 				'danbooru-group',
 				'$',
 				'MKSTREAM',
@@ -80,7 +83,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 					'BLOCK',
 					STREAM_BLOCK_MS,
 					'STREAMS',
-					'danbooru:requests',
+					REQUESTS_STREAM,
 					'>',
 				)
 
@@ -108,7 +111,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 							})
 							// Add to dead-letter queue for permanent validation error
 							await this.redis.xadd(
-								'danbooru-dlq',
+								DLQ_STREAM,
 								'*',
 								'jobId',
 								jobData.jobId || 'unknown',
@@ -117,7 +120,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 								'query',
 								jobData.query || '',
 							)
-							await this.redis.xack('danbooru:requests', 'danbooru-group', id)
+							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
 							return
 						}
 
@@ -125,7 +128,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 						await this.processRequest(jobId, query)
 						// ACK the message
-						await this.redis.xack('danbooru:requests', 'danbooru-group', id)
+						await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
 					})
 
 					await Promise.all(promises)
@@ -161,9 +164,13 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				return cached
 			}
 
-			// Simple rate limiting: 1 call per minute for educational purpose (approximate 100/min)
-			const now = Date.now()
-			if (now - this.lastApiCall < 60000) {
+			// Distributed rate limiting: check calls per minute
+			const minuteKey = `rate:minute:${Math.floor(Date.now() / 60000)}`
+			const currentCount = await this.redis.incr(minuteKey)
+			if (currentCount === 1) {
+				await this.redis.expire(minuteKey, 60)
+			}
+			if (currentCount > RATE_LIMIT_PER_MINUTE) {
 				const errorData: DanbooruErrorResponse = {
 					type: 'error',
 					jobId,
@@ -172,7 +179,6 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				await this.publishResponse(jobId, errorData)
 				return errorData
 			}
-			this.lastApiCall = now
 
 			const login: string =
 				this.configService.get<string>('DANBOORU_LOGIN') ?? ''
@@ -208,7 +214,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				await this.publishResponse(jobId, errorData)
 				// Add to dead-letter queue for permanent API error
 				await this.redis.xadd(
-					'danbooru-dlq',
+					DLQ_STREAM,
 					'*',
 					'jobId',
 					jobId,
@@ -258,7 +264,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			await this.publishResponse(jobId, errorData)
 			// Add to dead-letter queue for permanent processing error
 			await this.redis.xadd(
-				'danbooru-dlq',
+				DLQ_STREAM,
 				'*',
 				'jobId',
 				jobId,
@@ -272,7 +278,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private async publishResponse(jobId: string, data: DanbooruResponse) {
-		const responseKey = 'danbooru:responses'
+		const responseKey = RESPONSES_STREAM
 		const message = { ...data }
 		const entries = Object.entries(message).flatMap(([k, v]) => [
 			k,
@@ -285,7 +291,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private async getCachedResponse(
 		query: string,
 	): Promise<DanbooruSuccessResponse | null> {
-		const key = `cache:danbooru:${query.replace(/ /g, '_')}` // Sanitize key
+		const key = `cache:danbooru:${encodeURIComponent(query)}`
 		const cached = await this.redis.get(key)
 		if (cached) {
 			return JSON.parse(cached) as DanbooruSuccessResponse
@@ -297,7 +303,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		query: string,
 		response: DanbooruSuccessResponse,
 	): Promise<void> {
-		const key = `cache:danbooru:${query.replace(/ /g, '_')}`
+		const key = `cache:danbooru:${encodeURIComponent(query)}`
 		await this.redis.setex(key, 3600, JSON.stringify(response)) // 1h TTL
 		this.logger.log(`Cached response for query: ${query}`)
 	}
