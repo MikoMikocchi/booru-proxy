@@ -1,11 +1,19 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
+import {
+	Injectable,
+	Logger,
+	OnModuleInit,
+	OnModuleDestroy,
+} from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import axios from 'axios'
 import Redis from 'ioredis'
 import { plainToClass } from 'class-transformer'
 import { validate } from 'class-validator'
 import { CreateRequestDto } from './dto/create-request.dto'
-import { DanbooruResponse, DanbooruErrorResponse } from './types'
+import {
+	DanbooruResponse,
+	DanbooruErrorResponse,
+} from './interfaces/danbooru.interface'
 
 @Injectable()
 export class DanbooruService implements OnModuleInit, OnModuleDestroy {
@@ -65,8 +73,12 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 						const requestDto = plainToClass(CreateRequestDto, jobData)
 						const errors = await validate(requestDto)
 						if (errors.length > 0) {
-							this.logger.warn(`Validation error for job ${jobData.jobId || 'unknown'}: ${JSON.stringify(errors)}`)
-							await this.publishResponse(jobData.jobId || 'unknown', { error: 'Invalid request format' })
+							this.logger.warn(
+								`Validation error for job ${jobData.jobId || 'unknown'}: ${JSON.stringify(errors)}`,
+							)
+							await this.publishResponse(jobData.jobId || 'unknown', {
+								error: 'Invalid request format',
+							})
 							await this.redis.xdel('danbooru:requests', id)
 							continue
 						}
@@ -82,7 +94,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				if (this.running) {
 					this.logger.error('Error in stream consumer', error)
 					// Wait before retry
-					await new Promise((resolve) => setTimeout(resolve, 5000))
+					await new Promise(resolve => setTimeout(resolve, 5000))
 				}
 			}
 		}
@@ -120,9 +132,19 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			const source = post.source || null
 			const copyright = post.tag_string_copyright || ''
 
-			this.logger.log(`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`)
+			this.logger.log(
+				`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
+			)
 
-			const responseData: DanbooruResponse = { jobId, imageUrl, author, tags, rating, source, copyright }
+			const responseData: DanbooruResponse = {
+				jobId,
+				imageUrl,
+				author,
+				tags,
+				rating,
+				source,
+				copyright,
+			}
 			await this.publishResponse(jobId, responseData)
 			return responseData
 		} catch (error) {
@@ -133,10 +155,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		}
 	}
 
-	private async publishResponse(
-		jobId: string,
-		data: Record<string, any>,
-	) {
+	private async publishResponse(jobId: string, data: Record<string, any>) {
 		const responseKey = 'danbooru:responses'
 		const message = { jobId, ...data }
 		await this.redis.xadd(responseKey, '*', ...Object.entries(message).flat())
