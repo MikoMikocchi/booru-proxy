@@ -97,7 +97,11 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
 								error: 'Invalid request format',
 							})
 							// Add to dead-letter queue for permanent validation error
-							await this.addToDLQ(jobId, 'Invalid request format', jobData.query || '')
+							await this.addToDLQ(
+								jobId,
+								'Invalid request format',
+								jobData.query || '',
+							)
 							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
 							return
 						}

@@ -65,8 +65,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 			// Distributed rate limiting using Lua script
 			const rateLimitPerMinute =
-				this.configService.get<number>('RATE_LIMIT_PER_MINUTE') ||
-				60
+				this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
 			const rateKey = `rate:danbooru:${jobId}`
 			const isAllowed = await this.rateLimiterService.checkRateLimit(
 				rateKey,
@@ -83,7 +82,11 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				return errorData
 			}
 
-			const post = await this.danbooruApiService.fetchPosts(query, limit, random)
+			const post = await this.danbooruApiService.fetchPosts(
+				query,
+				limit,
+				random,
+			)
 			if (!post) {
 				const errorMessage = 'No posts found for the query or API error'
 				const errorData: DanbooruErrorResponse = {
@@ -152,7 +155,11 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
 	}
 
-	private async addToDLQ(jobId: string, errorMessage: string, query: string): Promise<void> {
+	private async addToDLQ(
+		jobId: string,
+		errorMessage: string,
+		query: string,
+	): Promise<void> {
 		await this.redis.xadd(
 			DLQ_STREAM,
 			'*',

@@ -1,9 +1,7 @@
 import { Injectable, Inject, Logger } from '@nestjs/common'
 import Redis from 'ioredis'
 import { ConfigService } from '@nestjs/config'
-import {
-	DanbooruSuccessResponse,
-} from './interfaces/danbooru.interface'
+import { DanbooruSuccessResponse } from './interfaces/danbooru.interface'
 
 @Injectable()
 export class CacheService {
@@ -17,7 +15,9 @@ export class CacheService {
 		this.ttl = this.configService.get<number>('CACHE_TTL_SECONDS') || 3600
 	}
 
-	async getCachedResponse(query: string): Promise<DanbooruSuccessResponse | null> {
+	async getCachedResponse(
+		query: string,
+	): Promise<DanbooruSuccessResponse | null> {
 		const key = this.getCacheKey(query)
 		const cached = await this.redis.get(key)
 		if (cached) {
@@ -26,7 +26,10 @@ export class CacheService {
 		return null
 	}
 
-	async setCache(query: string, response: DanbooruSuccessResponse): Promise<void> {
+	async setCache(
+		query: string,
+		response: DanbooruSuccessResponse,
+	): Promise<void> {
 		const key = this.getCacheKey(query)
 		await this.redis.setex(key, this.ttl, JSON.stringify(response))
 		this.logger.log(`Cached response for query: ${query}`)

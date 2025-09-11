@@ -5,11 +5,13 @@ import Redis from 'ioredis'
 export class RateLimiterService {
 	private readonly logger = new Logger(RateLimiterService.name)
 
-	constructor(
-		@Inject('REDIS_CLIENT') private readonly redis: Redis,
-	) {}
+	constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
 
-	async checkRateLimit(key: string, limit: number, windowSeconds: number): Promise<boolean> {
+	async checkRateLimit(
+		key: string,
+		limit: number,
+		windowSeconds: number,
+	): Promise<boolean> {
 		const luaScript = `
 			local key = KEYS[1]
 			local limit = tonumber(ARGV[1])
@@ -33,7 +35,14 @@ export class RateLimiterService {
 		`
 
 		const now = Date.now()
-		const result = await this.redis.eval(luaScript, 1, key, limit, windowSeconds, now)
+		const result = await this.redis.eval(
+			luaScript,
+			1,
+			key,
+			limit,
+			windowSeconds,
+			now,
+		)
 		if (result === 0) {
 			this.logger.warn(`Rate limit exceeded for key ${key}`)
 		}
