@@ -39,16 +39,22 @@ export class DanbooruApiService {
       response => response,
       async (error: AxiosError) => {
         const maxRetries = 3
-        const config = error.config as any // Type assertion for retryCount
-        const retryCount = config.retryCount || 0
+        // Use any cast to access custom retryCount property
+        const config = error.config as any
+        const currentRetryCount = config?.retryCount || 0
         if (
-          retryCount < maxRetries &&
+          currentRetryCount < maxRetries &&
           (error.code === 'ECONNABORTED' ||
-            (error.response?.status && error.response.status >= 500))
+            (error.response?.status && (error.response.status >= 500 || error.response.status === 429)))
         ) {
-          config.retryCount = retryCount + 1
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount))
-          return this.axiosInstance(config)
+          // Clone config to avoid mutation
+          const retryConfig = {
+            ...config,
+            retryCount: currentRetryCount + 1,
+          }
+          const delay = 1000 * (currentRetryCount + 1)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          return this.axiosInstance(retryConfig)
         }
         return Promise.reject(error)
       },
@@ -102,17 +108,12 @@ export class DanbooruApiService {
 
   private sanitizeTags(tags: string): string {
     if (!tags) return ''
+    // Strict sanitization: strip all HTML/JS tags to prevent XSS in user-generated Danbooru tags
+    // Use empty whiteList to remove all tags, escape attributes, and strip dangerous elements
     return xss(tags, {
-      whiteList: {
-        // Allow safe tags for Danbooru metadata
-        a: ['href', 'title'],
-        strong: [],
-        em: [],
-        p: [],
-        br: [],
-      },
+      whiteList: {}, // No allowed tags - full stripping
       stripIgnoreTag: true,
-      stripIgnoreTagBody: ['script', 'style'],
+      stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed'],
     })
   }
 }
