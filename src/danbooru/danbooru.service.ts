@@ -22,11 +22,13 @@ import {
 	RETRY_DELAY_MS,
 	STREAM_BLOCK_MS,
 	RATE_LIMIT_PER_MINUTE,
+	RATE_WINDOW_SECONDS,
+	DEDUP_TTL_SECONDS,
+	MAX_RETRY_ATTEMPTS,
+	MAX_BACKOFF_MS,
 	REQUESTS_STREAM,
 	RESPONSES_STREAM,
 	DLQ_STREAM,
-  RATE_WINDOW_SECONDS,
-  DEDUP_TTL_SECONDS,
 } from '../common/constants'
 
 @Injectable()
@@ -70,6 +72,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private async startConsumer() {
 		while (this.running) {
 			try {
+				type RedisStreamEntry = [string, [string, string[]][]]
+
 				const streams = await this.redis.xreadgroup(
 					'GROUP',
 					'danbooru-group',
@@ -79,12 +83,12 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 					'STREAMS',
 					REQUESTS_STREAM,
 					'>',
-				)
+				) as RedisStreamEntry[]
 
 				if (!streams) continue
 
-				for (const stream of streams as any[]) {
-					const messages = stream[1] as [string, string[]][]
+				for (const [key, messages] of streams) {
+					const messagesTyped = messages as [string, string[]][]
 
 					const promises = messages.map(async ([id, fields]) => {
 						const jobData: { [key: string]: string } = {}
@@ -144,9 +148,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 					this.logger.error('Error in stream consumer', error)
 					// Simple exponential backoff for transient errors
 					let delay = RETRY_DELAY_MS
-					for (let attempt = 0; attempt < 5; attempt++) {
+					for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
 						await new Promise(resolve => setTimeout(resolve, delay))
-						delay = Math.min(delay * 2, 30000) // Double delay, cap at 30s
+						delay = Math.min(delay * 2, MAX_BACKOFF_MS) // Double delay, cap at 30s
 						this.logger.warn(
 							`Retry attempt ${attempt + 1} after delay ${delay}ms`,
 						)
