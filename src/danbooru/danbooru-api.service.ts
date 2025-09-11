@@ -103,7 +103,16 @@ export class DanbooruApiService {
 	private sanitizeTags(tags: string): string {
 		if (!tags) return ''
 		return xss(tags, {
-			whiteList: {}, // Strict mode, no HTML tags allowed
+			whiteList: {
+				// Allow safe tags for Danbooru metadata
+				'a': ['href', 'title'],
+				'strong': [],
+				'em': [],
+				'p': [],
+				'br': [],
+			},
+			stripIgnoreTag: true,
+			stripIgnoreTagBody: ['script', 'style'],
 		})
 	}
 }
