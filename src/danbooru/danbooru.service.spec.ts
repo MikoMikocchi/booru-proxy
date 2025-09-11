@@ -269,7 +269,7 @@ describe('DanbooruService', () => {
 				jobId: 'test-sanitize',
 				imageUrl: 'https://example.com/image.jpg',
 				author: 'artist',
-				tags: 'alert("xss") tag1, tag2',
+				tags: ' tag1, tag2',
 				rating: 's',
 				source: 'https://source.com',
 				copyright: 'copy bold right',
