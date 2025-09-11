@@ -13,13 +13,33 @@ import { parseRedisUrl } from '../utils/redis.util'
 				const redisUrl =
 					configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
 				const parsedUrl = parseRedisUrl(redisUrl)
-				return new Redis({
+				const redisClient = new Redis({
 					host: parsedUrl.hostname,
 					port: Number(parsedUrl.port) || 6379,
 					username: parsedUrl.username || undefined,
 					password: parsedUrl.password || undefined,
 					tls: parsedUrl.protocol === 'rediss:' ? {} : undefined,
-				})
+					retryStrategy: (times: number) => {
+						if (times > 10) {
+							return null; // Stop retrying after 10 attempts
+						}
+						return Math.min(times * 100, 2000); // Exponential backoff, max 2s
+					},
+					reconnectOnError: (err: Error) => {
+						const targetError = 'READONLY';
+						if (err.message.includes(targetError)) {
+							return 1; // Reconnect after 1s
+						}
+						return 1; // Reconnect always
+					},
+				});
+
+				// Global error handler
+				redisClient.on('error', (error: Error) => {
+					console.error('Redis Client Error:', error);
+				});
+
+				return redisClient
 			},
 			inject: [ConfigService],
 		},

@@ -28,7 +28,11 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     private readonly danbooruService: DanbooruService,
-  ) {}
+  ) {
+    this.redis.on('error', (error: Error) => {
+      this.logger.error(`Redis error in stream consumer: ${error.message}`, error.stack);
+    });
+  }
 
   async onModuleInit() {
     this.logger.log('Starting Danbooru stream consumer')

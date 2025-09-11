@@ -17,7 +17,11 @@ export class DlqConsumer implements OnModuleInit, OnModuleDestroy {
 	private readonly logger = new Logger(DlqConsumer.name)
 	private running = true
 
-	constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
+	constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
+	   this.redis.on('error', (error: Error) => {
+	     this.logger.error(`Redis error in DLQ consumer: ${error.message}`, error.stack);
+	   });
+	 }
 
 	async onModuleInit() {
 		this.logger.log('Starting DLQ consumer')
