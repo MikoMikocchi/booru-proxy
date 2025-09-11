@@ -18,7 +18,9 @@ async function bootstrap() {
 		},
 	}
 	app.connectMicroservice(microserviceOptions)
+	const port = configService.get('PORT', 3000)
 	await app.startAllMicroservices()
+	await app.listen(port)
 
 	process.on('SIGINT', async () => {
 		await app.close()

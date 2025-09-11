@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Inject } from '@nestjs/common'
 import { HealthIndicatorService, HealthIndicatorResult } from '@nestjs/terminus'
 import Redis from 'ioredis'
 
@@ -6,18 +6,16 @@ import Redis from 'ioredis'
 export class RedisHealthIndicator {
 	constructor(
 		private readonly healthIndicatorService: HealthIndicatorService,
+		@Inject('REDIS_CLIENT') private readonly redis: Redis,
 	) {}
 
 	async isHealthy(key: string): Promise<HealthIndicatorResult> {
 		const indicator = this.healthIndicatorService.check(key)
-		const redis = new Redis({ host: 'localhost', port: 6379 })
 		try {
-			await redis.ping()
+			await this.redis.ping()
 			return indicator.up()
 		} catch (e) {
 			return indicator.down('Redis not available')
-		} finally {
-			await redis.disconnect()
 		}
 	}
 }
