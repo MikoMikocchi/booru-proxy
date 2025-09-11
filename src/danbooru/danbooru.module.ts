@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { RedisModule } from '../common/redis/redis.module'
 import { DanbooruService } from './danbooru.service'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from './cache.service'
@@ -7,6 +8,7 @@ import { RedisStreamConsumer } from './redis-stream.consumer'
 import { DlqConsumer } from './dlq.consumer'
 
 @Module({
+  imports: [RedisModule],
   providers: [
     DanbooruService,
     DanbooruApiService,
