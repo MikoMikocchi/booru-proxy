@@ -14,6 +14,7 @@ import {
 	DanbooruResponse,
 	DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
+import { DanbooruPost } from './interfaces/danbooru-post.interface'
 
 @Injectable()
 export class DanbooruService implements OnModuleInit, OnModuleDestroy {
@@ -114,15 +115,6 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				throw new Error('DANBOORU_LOGIN and DANBOORU_API_KEY must be set')
 			}
 			const auth = { username: login, password: apiKey }
-
-			interface DanbooruPost {
-				file_url: string
-				tag_string_artist?: string
-				tag_string_general: string
-				rating: string
-				source?: string
-				tag_string_copyright: string
-			}
 
 			const response = await axios.get<DanbooruPost[]>(
 				`https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=1&random=true`,
