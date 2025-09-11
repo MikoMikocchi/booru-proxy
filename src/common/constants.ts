@@ -9,3 +9,5 @@ export const MAX_BACKOFF_MS = 30000
 export const REQUESTS_STREAM = 'danbooru:requests'
 export const RESPONSES_STREAM = 'danbooru:responses'
 export const DLQ_STREAM = 'danbooru-dlq'
+export const DEAD_QUEUE_STREAM = 'danbooru-dead'
+export const MAX_DLQ_RETRIES = 5

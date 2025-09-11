@@ -10,7 +10,9 @@ import {
 	REQUESTS_STREAM,
 	DLQ_STREAM,
 	STREAM_BLOCK_MS,
+	MAX_DLQ_RETRIES,
 } from '../common/constants'
+import { addToDLQ, moveToDeadQueue } from './utils/dlq.util'
 
 @Injectable()
 export class DlqConsumer implements OnModuleInit, OnModuleDestroy {
@@ -78,30 +80,33 @@ export class DlqConsumer implements OnModuleInit, OnModuleDestroy {
 							jobData[fields[i]] = fields[i + 1]
 						}
 
-						const { jobId, error, query } = jobData
+						const { jobId, error, query, retryCount: rawRetryCount } = jobData
+						const retryCount = parseInt(rawRetryCount || '0', 10)
 
 						this.logger.error(
-							`Processing DLQ job ${jobId}: error = ${error}, query = ${query}`,
+							`Processing DLQ job ${jobId}: error = ${error}, query = ${query}, retry = ${retryCount}/${MAX_DLQ_RETRIES}`,
 						)
 
-						// Simple retry logic: if error is not permanent (e.g., 'No posts found' or 'Rate limit'), re-add to main stream
-						if (
+						const isRetryableError =
 							error.includes('No posts found') ||
-							error.includes('Rate limit')
-						) {
-							// Retry by re-adding to main stream
-							await this.redis.xadd(
-								REQUESTS_STREAM,
-								'*',
-								'jobId',
-								jobId,
-								'query',
-								query,
-							)
-							this.logger.log(`Retried job ${jobId} from DLQ to main stream`)
+							error.includes('Rate limit') ||
+							error.includes('API error')
+
+						const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 60000) // 1s to 60s exponential
+
+						if (isRetryableError && retryCount < MAX_DLQ_RETRIES) {
+							// Apply backoff before retry
+							this.logger.log(`Job ${jobId} backoff ${backoffDelay}ms, retry ${retryCount + 1}/${MAX_DLQ_RETRIES}`)
+							await new Promise(resolve => setTimeout(resolve, backoffDelay))
+
+							// Retry by re-adding to main stream with incremented retry count
+							await addToDLQ(this.redis, jobId, error, query, retryCount + 1)
+							this.logger.log(`Retried job ${jobId} from DLQ to main stream (attempt ${retryCount + 1})`)
 						} else {
+							// Move to dead queue
+							await moveToDeadQueue(this.redis, jobId, error, query, isRetryableError ? undefined : error)
 							this.logger.warn(
-								`Permanent error for job ${jobId}, skipping retry`,
+								`Job ${jobId} moved to dead queue (max retries or permanent error)`,
 							)
 						}
 
