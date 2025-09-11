@@ -3,6 +3,7 @@ import {
 	Logger,
 	OnModuleInit,
 	OnModuleDestroy,
+	Inject,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import axios from 'axios'
@@ -29,21 +30,12 @@ import {
 @Injectable()
 export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private readonly logger = new Logger(DanbooruService.name)
-	private readonly redis: Redis
 	private running = true
 
-	constructor(private configService: ConfigService) {
-		const redisUrl: string =
-			this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
-		const url = new URL(redisUrl)
-		this.redis = new Redis({
-			host: url.hostname,
-			port: Number(url.port) || 6379,
-			username: url.username || undefined,
-			password: url.password || undefined,
-			tls: url.protocol === 'rediss:' ? {} : undefined,
-		})
-	}
+	constructor(
+		private configService: ConfigService,
+		@Inject('REDIS_CLIENT') private readonly redis: Redis,
+	) {}
 
 	async onModuleInit() {
 		this.logger.log('Starting Danbooru stream consumer')

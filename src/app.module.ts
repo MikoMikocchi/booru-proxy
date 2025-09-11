@@ -3,9 +3,11 @@ import { ConfigModule } from '@nestjs/config'
 import * as Joi from 'joi'
 import { DanbooruModule } from './danbooru/danbooru.module'
 import { HealthModule } from './health/health.module'
+import { RedisModule } from './common/redis/redis.module'
 
 @Module({
 	imports: [
+		RedisModule,
 		ConfigModule.forRoot({
 			isGlobal: true,
 			validationSchema: Joi.object({
