@@ -86,10 +86,13 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
   async publishResponse(jobId: string, data: DanbooruResponse) {
     const responseKey = RESPONSES_STREAM
-    const message = { ...data }
-    const entries = Object.entries(message).flatMap(([k, v]) => [
+    // Serialize to JSON to preserve null values and proper types for Redis stream
+    const jsonMessage = JSON.stringify(data)
+    // Parse back to get flat key-value pairs for xadd (Redis streams expect flat strings)
+    const parsed = JSON.parse(jsonMessage)
+    const entries = Object.entries(parsed).flatMap(([k, v]) => [
       k,
-      v == null ? 'null' : v.toString(),
+      v === null || v === undefined ? '' : String(v) // Empty string for null/undefined to distinguish from 'null' string
     ])
     await this.redis.xadd(responseKey, '*', ...entries)
     this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
