@@ -15,12 +15,15 @@ async function bootstrap() {
 			port: Number(url.port) || 6379,
 			username: url.username || undefined,
 			password: url.password || undefined,
+			tls: url.protocol === 'rediss:' ? {} : undefined,
 		},
 	}
 	app.connectMicroservice(microserviceOptions)
-	const port = configService.get('PORT', 3000)
 	await app.startAllMicroservices()
+
+	const port = configService.get('PORT') || 3000
 	await app.listen(port)
+	console.log(`HTTP server listening on port ${port}`)
 
 	process.on('SIGINT', async () => {
 		await app.close()

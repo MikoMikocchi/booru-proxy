@@ -1,5 +1,5 @@
 import { Controller, Get } from '@nestjs/common'
-import { HealthCheck, HealthCheckService } from '@nestjs/terminus'
+import { HealthCheck, HealthCheckService, HealthCheckResult, HealthIndicatorResult } from '@nestjs/terminus'
 import { RedisHealthIndicator } from './redis.health'
 
 @Controller('health')
@@ -11,7 +11,7 @@ export class HealthController {
 
 	@Get()
 	@HealthCheck()
-	async check() {
+	async check(): Promise<HealthCheckResult> {
 		return this.health.check([
 			() => this.redisHealthIndicator.isHealthy('redis'),
 		])

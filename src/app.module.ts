@@ -13,7 +13,6 @@ import { RedisModule } from './common/redis/redis.module'
         DANBOORU_LOGIN: Joi.string().required(),
         DANBOORU_API_KEY: Joi.string().required(),
         REDIS_URL: Joi.string().required(),
-        PORT: Joi.number().default(3000),
         RATE_LIMIT_PER_MINUTE: Joi.number().default(60),
         CACHE_TTL_SECONDS: Joi.number().default(3600),
       }),
@@ -21,9 +20,9 @@ import { RedisModule } from './common/redis/redis.module'
         abortEarly: true,
       },
     }),
-    RedisModule,
     DanbooruModule,
     HealthModule,
+    RedisModule,
   ],
 })
 export class AppModule {}
