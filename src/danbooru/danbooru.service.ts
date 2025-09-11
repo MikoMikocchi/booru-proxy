@@ -74,7 +74,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			try {
 				type RedisStreamEntry = [string, [string, string[]][]]
 
-				const streams = await this.redis.xreadgroup(
+				const streams = (await this.redis.xreadgroup(
 					'GROUP',
 					'danbooru-group',
 					'worker-1',
@@ -83,7 +83,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 					'STREAMS',
 					REQUESTS_STREAM,
 					'>',
-				) as RedisStreamEntry[]
+				)) as RedisStreamEntry[]
 
 				if (!streams) continue
 
@@ -101,6 +101,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 						if (errors.length > 0) {
 							this.logger.warn(
 								`Validation error for job ${jobData.jobId || 'unknown'}: ${JSON.stringify(errors)}`,
+								jobData.jobId || 'unknown',
 							)
 							await this.publishResponse(jobData.jobId || 'unknown', {
 								type: 'error',
@@ -125,9 +126,15 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 						const { jobId, query } = requestDto
 
 						// Deduplication check
-						const isDuplicate = await this.redis.sismember('processed_jobs', jobId)
+						const isDuplicate = await this.redis.sismember(
+							'processed_jobs',
+							jobId,
+						)
 						if (isDuplicate) {
-							this.logger.warn(`Duplicate job ${jobId} detected, skipping`)
+							this.logger.warn(
+								`Duplicate job ${jobId} detected, skipping`,
+								jobId,
+							)
 							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
 							return
 						}
@@ -145,7 +152,10 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				}
 			} catch (error) {
 				if (this.running) {
-					this.logger.error('Error in stream consumer', error)
+					this.logger.error(
+						'Error in stream consumer',
+						error.stack || error.message,
+					)
 					// Simple exponential backoff for transient errors
 					let delay = RETRY_DELAY_MS
 					for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
@@ -164,18 +174,20 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		jobId: string,
 		query: string,
 	): Promise<DanbooruResponse> {
-		this.logger.log(`Processing job ${jobId} for query: ${query}`)
+		this.logger.log(`Processing job ${jobId} for query: ${query}`, jobId)
 
 		try {
 			// Check cache first
 			const cached = await this.getCachedResponse(query)
 			if (cached) {
-				this.logger.log(`Cache hit for job ${jobId}`)
+				this.logger.log(`Cache hit for job ${jobId}`, jobId)
 				return cached
 			}
 
 			// Distributed rate limiting: check calls per minute
-			const rateLimitPerMinute = this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || RATE_LIMIT_PER_MINUTE
+			const rateLimitPerMinute =
+				this.configService.get<number>('RATE_LIMIT_PER_MINUTE') ||
+				RATE_LIMIT_PER_MINUTE
 			const minuteKey = `rate:minute:${Math.floor(Date.now() / (RATE_WINDOW_SECONDS * 1000))}`
 			const currentCount = await this.redis.incr(minuteKey)
 			if (currentCount === 1) {
@@ -211,12 +223,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			if (random) {
 				url += '&random=true'
 			}
-			const response = await axios.get<DanbooruPost[]>(
-				url,
-				{
-					timeout: API_TIMEOUT_MS,
-				},
-			)
+			const response = await axios.get<DanbooruPost[]>(url, {
+				timeout: API_TIMEOUT_MS,
+			})
 
 			const posts: DanbooruPost[] = response.data
 			if (posts.length === 0) {
@@ -251,6 +260,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 			this.logger.log(
 				`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
+				jobId,
 			)
 
 			const responseData: DanbooruSuccessResponse = {
@@ -270,7 +280,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		} catch (error: unknown) {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error)
-			this.logger.error(`Error processing job ${jobId}: ${errorMessage}`)
+			this.logger.error(`Error processing job ${jobId}: ${errorMessage}`, jobId)
 			const errorData: DanbooruErrorResponse = {
 				type: 'error',
 				jobId,
@@ -293,17 +303,17 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private sanitizeTags(tags: string): string {
-		if (!tags) return tags;
+		if (!tags) return tags
 		// Basic sanitization to remove potential HTML/JS
 		let sanitized = tags
 			.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-			.replace(/<[^>]*>/g, '');
-		sanitized = sanitized.replace(/&/g, '&');
-		sanitized = sanitized.replace(/</g, '<');
-		sanitized = sanitized.replace(/>/g, '>');
-		sanitized = sanitized.replace(/"/g, '"');
-		sanitized = sanitized.replace(/'/g, "'");
-		return sanitized;
+			.replace(/<[^>]*>/g, '')
+		sanitized = sanitized.replace(/&/g, '&')
+		sanitized = sanitized.replace(/</g, '<')
+		sanitized = sanitized.replace(/>/g, '>')
+		sanitized = sanitized.replace(/"/g, '"')
+		sanitized = sanitized.replace(/'/g, "'")
+		return sanitized
 	}
 	private async publishResponse(jobId: string, data: DanbooruResponse) {
 		const responseKey = RESPONSES_STREAM

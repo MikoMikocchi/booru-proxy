@@ -335,7 +335,10 @@ describe('DanbooruService', () => {
 		it('should handle invalid query with SQL-like injection', async () => {
 			const validationError = {
 				property: 'query',
-				constraints: { matches: 'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags)' },
+				constraints: {
+					matches:
+						'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags)',
+				},
 			} as any
 			;(classValidator.validate as jest.Mock).mockResolvedValue([
 				validationError,
@@ -425,63 +428,59 @@ describe('DanbooruService', () => {
 			expect(mockRedisInstance.xadd).toHaveBeenCalledTimes(2) // 2 responses from processRequest
 		})
 
-		it(
-			'should handle Redis disconnect gracefully',
-			async () => {
-				const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(
-					(cb: () => void, delay?: number) => {
-						process.nextTick(cb);
-						return 1 as any;
-					},
-				);
-
-				const mockPost = {
-					file_url: 'https://example.com/image.jpg',
-					tag_string_artist: 'artist',
-					tag_string_general: 'tags',
-					rating: 's',
-					source: 'https://source.com',
-					tag_string_copyright: 'copyright',
-				} as any
-
-				mockAxios.get.mockResolvedValue({ data: [mockPost] })
-
-				const mockError = new Error('Connection lost')
-				const mockFields = ['jobId', 'test1', 'query', 'hatsune_miku']
-				const mockMessage = ['id', mockFields] as any
-				const mockStream = [['danbooru:requests', [mockMessage]]] as any
-
-				;(classValidator.validate as jest.Mock).mockResolvedValue([])
-
-				let attemptCount = 0
-				let callCount = 0
-				mockRedisInstance.xreadgroup.mockImplementation(async () => {
-					callCount++
-					attemptCount++
-					if (attemptCount <= 5) {
-						throw mockError
-					} else if (callCount === 6) {
-						// Succeed after retries
-						return mockStream
-					} else {
-						;(service as any).running = false
-						return null
-					}
+		it('should handle Redis disconnect gracefully', async () => {
+			const setTimeoutSpy = jest
+				.spyOn(global, 'setTimeout')
+				.mockImplementation((cb: () => void, delay?: number) => {
+					process.nextTick(cb)
+					return 1 as any
 				})
 
-				await (service as any).startConsumer()
+			const mockPost = {
+				file_url: 'https://example.com/image.jpg',
+				tag_string_artist: 'artist',
+				tag_string_general: 'tags',
+				rating: 's',
+				source: 'https://source.com',
+				tag_string_copyright: 'copyright',
+			} as any
 
-				expect(mockRedisInstance.xreadgroup).toHaveBeenCalledTimes(7) // 5 failures + success + final null call
-				expect(mockRedisInstance.xack).toHaveBeenCalledWith(
-					REQUESTS_STREAM,
-					'danbooru-group',
-					'id',
-				)
+			mockAxios.get.mockResolvedValue({ data: [mockPost] })
 
-				setTimeoutSpy.mockRestore();
-			},
-			20000
-		)
+			const mockError = new Error('Connection lost')
+			const mockFields = ['jobId', 'test1', 'query', 'hatsune_miku']
+			const mockMessage = ['id', mockFields] as any
+			const mockStream = [['danbooru:requests', [mockMessage]]] as any
+
+			;(classValidator.validate as jest.Mock).mockResolvedValue([])
+
+			let attemptCount = 0
+			let callCount = 0
+			mockRedisInstance.xreadgroup.mockImplementation(async () => {
+				callCount++
+				attemptCount++
+				if (attemptCount <= 5) {
+					throw mockError
+				} else if (callCount === 6) {
+					// Succeed after retries
+					return mockStream
+				} else {
+					;(service as any).running = false
+					return null
+				}
+			})
+
+			await (service as any).startConsumer()
+
+			expect(mockRedisInstance.xreadgroup).toHaveBeenCalledTimes(7) // 5 failures + success + final null call
+			expect(mockRedisInstance.xack).toHaveBeenCalledWith(
+				REQUESTS_STREAM,
+				'danbooru-group',
+				'id',
+			)
+
+			setTimeoutSpy.mockRestore()
+		}, 20000)
 	})
 
 	describe('cache operations', () => {

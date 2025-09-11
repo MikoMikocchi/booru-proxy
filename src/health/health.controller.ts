@@ -1,5 +1,10 @@
 import { Controller, Get } from '@nestjs/common'
-import { HealthCheck, HealthCheckService, HealthCheckResult, HealthIndicatorResult } from '@nestjs/terminus'
+import {
+	HealthCheck,
+	HealthCheckService,
+	HealthCheckResult,
+	HealthIndicatorResult,
+} from '@nestjs/terminus'
 import { RedisHealthIndicator } from './redis.health'
 
 @Controller('health')

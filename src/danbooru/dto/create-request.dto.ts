@@ -1,4 +1,10 @@
-import { IsString, IsNotEmpty, Matches, MaxLength, Length } from 'class-validator'
+import {
+	IsString,
+	IsNotEmpty,
+	Matches,
+	MaxLength,
+	Length,
+} from 'class-validator'
 
 export class CreateRequestDto {
 	@IsNotEmpty()
