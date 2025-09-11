@@ -34,9 +34,11 @@ import { parseRedisUrl } from '../utils/redis.util'
           },
         })
 
-        // Global error handler
+        // Global error handler - suppress in test environment
         redisClient.on('error', (error: Error) => {
-          console.error('Redis Client Error:', error)
+          if (process.env.NODE_ENV !== 'test') {
+            console.error('Redis Client Error:', error)
+          }
         })
 
         return redisClient

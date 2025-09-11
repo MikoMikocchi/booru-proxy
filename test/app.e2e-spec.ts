@@ -1,16 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing'
-import { Inject } from '@nestjs/common'
 import { DanbooruService } from '../src/danbooru/danbooru.service'
-import { ConfigService } from '@nestjs/config'
 import { Module } from '@nestjs/common'
-import { DanbooruModule } from '../src/danbooru/danbooru.module'
 import { RedisModule } from '../src/common/redis/redis.module'
 import Redis from 'ioredis'
-import {
-  GenericContainer,
-  StartedTestContainer,
-  TestContainers,
-} from 'testcontainers'
+import { GenericContainer, StartedTestContainer } from 'testcontainers'
 import { ConfigModule } from '@nestjs/config'
 import nock from 'nock'
 import {
@@ -114,7 +107,9 @@ describe('DanbooruService (e2e)', () => {
     service = {
       async processRequest(jobId: string, query: string, clientId?: string) {
         // Use the existing mocked services directly
-        const isAllowed = await mockRateLimiterService.checkRateLimit(clientId || 'global')
+        const isAllowed = await mockRateLimiterService.checkRateLimit(
+          clientId || 'global',
+        )
         if (!isAllowed) {
           return {
             type: 'error',
@@ -156,19 +151,29 @@ describe('DanbooruService (e2e)', () => {
         await mockCacheService.setCache(jobId, result)
 
         // Publish to response stream using the real redis client
-        await redisClient.xadd(RESPONSES_STREAM, '*',
-          'jobId', jobId,
-          'type', result.type,
-          'imageUrl', result.imageUrl,
-          'author', result.author,
-          'tags', result.tags,
-          'rating', result.rating,
-          'copyright', result.copyright,
-          'source', result.source
+        await redisClient.xadd(
+          RESPONSES_STREAM,
+          '*',
+          'jobId',
+          jobId,
+          'type',
+          result.type,
+          'imageUrl',
+          result.imageUrl,
+          'author',
+          result.author,
+          'tags',
+          result.tags,
+          'rating',
+          result.rating,
+          'copyright',
+          result.copyright,
+          'source',
+          result.source,
         )
 
         return result
-      }
+      },
     } as DanbooruService
   }, 30000)
 
@@ -221,7 +226,13 @@ describe('DanbooruService (e2e)', () => {
     // Verify response was published to stream
     await new Promise(resolve => setTimeout(resolve, 100)) // Wait for async publish
 
-    const responses = await redisClient.xread('COUNT', 1, 'STREAMS', RESPONSES_STREAM, '0')
+    const responses = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      RESPONSES_STREAM,
+      '0',
+    )
     expect(responses).toBeDefined()
     const responseMessages = responses ? responses[0][1] : []
     expect(responseMessages).toHaveLength(1)
@@ -297,7 +308,13 @@ describe('DanbooruService (e2e)', () => {
     )
 
     // Read from DLQ - read from beginning
-    const dlqMessages = await redisClient.xread('COUNT', 1, 'STREAMS', DLQ_STREAM, '0')
+    const dlqMessages = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      DLQ_STREAM,
+      '0',
+    )
     expect(dlqMessages).toBeDefined()
     const dlqMessageList = dlqMessages?.[0]?.[1] || []
     expect(dlqMessageList).toHaveLength(1)
@@ -337,7 +354,13 @@ describe('DanbooruService (e2e)', () => {
     }
 
     // Verify retry was added back to main stream
-    const retryMessages = await redisClient.xread('COUNT', 1, 'STREAMS', REQUESTS_STREAM, '0')
+    const retryMessages = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      REQUESTS_STREAM,
+      '0',
+    )
     expect(retryMessages).toBeDefined()
     const retryMessageList = retryMessages?.[0]?.[1] || []
     expect(retryMessageList).toHaveLength(1)
@@ -352,7 +375,13 @@ describe('DanbooruService (e2e)', () => {
     expect(retryFields.query).toBe(extractedQuery)
 
     // Verify DLQ message was removed
-    const remainingDlq = await redisClient.xread('COUNT', 1, 'STREAMS', DLQ_STREAM, '0')
+    const remainingDlq = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      DLQ_STREAM,
+      '0',
+    )
     expect(remainingDlq).toBeNull()
   }, 10000)
 
@@ -376,7 +405,13 @@ describe('DanbooruService (e2e)', () => {
     )
 
     // Read from DLQ - read from beginning
-    const dlqMessages = await redisClient.xread('COUNT', 1, 'STREAMS', 'danbooru-dlq', '0')
+    const dlqMessages = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      'danbooru-dlq',
+      '0',
+    )
     expect(dlqMessages).toBeDefined()
     const dlqMessageList = dlqMessages?.[0]?.[1] || []
     expect(dlqMessageList).toHaveLength(1)
@@ -410,7 +445,13 @@ describe('DanbooruService (e2e)', () => {
     }
 
     // Verify moved to dead queue
-    const deadMessages = await redisClient.xread('COUNT', 1, 'STREAMS', 'danbooru-dead', '0')
+    const deadMessages = await redisClient.xread(
+      'COUNT',
+      1,
+      'STREAMS',
+      'danbooru-dead',
+      '0',
+    )
     expect(deadMessages).toBeDefined()
     const deadMessageList = deadMessages?.[0]?.[1] || []
     expect(deadMessageList).toHaveLength(1)
