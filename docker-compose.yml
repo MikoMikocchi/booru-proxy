@@ -25,8 +25,6 @@ services:
       - CACHE_TTL_SECONDS=3600
       - DANBOORU_LIMIT=1
       - DANBOORU_RANDOM=true
-    volumes:
-      - ./.env:/app/.env:ro  # Mount .env if needed, but use env vars
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -h redis ping || exit 1"]
       interval: 30s

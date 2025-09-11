@@ -14,10 +14,10 @@ export class CreateRequestDto {
 
 	@IsNotEmpty()
 	@IsString()
-	@MaxLength(200)
-	@Matches(/^[a-zA-Z0-9_][a-zA-Z0-9_ \-,:()]{0,199}$/i, {
+	@MaxLength(100)
+	@Matches(/^[a-zA-Z0-9_][a-zA-Z0-9_ \-,:()]{0,99}$/i, {
 		message:
-			'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags), starting with alphanumeric or underscore',
+			'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags), no negation (~) or other specials, starting with alphanumeric or underscore, max 100 chars',
 	})
 	query: string
 }
