@@ -4,6 +4,7 @@ import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from './cache.service'
 import { RateLimiterService } from './rate-limiter.service'
 import { RedisStreamConsumer } from './redis-stream.consumer'
+import { DlqConsumer } from './dlq.consumer'
 
 @Module({
 	providers: [
@@ -12,6 +13,7 @@ import { RedisStreamConsumer } from './redis-stream.consumer'
 		CacheService,
 		RateLimiterService,
 		RedisStreamConsumer,
+		DlqConsumer,
 	],
 	exports: [DanbooruService],
 })

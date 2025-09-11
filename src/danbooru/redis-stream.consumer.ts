@@ -75,7 +75,7 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
 				if (!streams) continue
 
 				for (const [key, messages] of streams) {
-					const messagesTyped = messages as [string, string[]][]
+					const messagesTyped = messages
 
 					const promises = messagesTyped.map(async ([id, fields]) => {
 						const jobData: { [key: string]: string } = {}

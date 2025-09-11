@@ -28,7 +28,7 @@ services:
     volumes:
       - ./.env:/app/.env:ro  # Mount .env if needed, but use env vars
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD-SHELL", "redis-cli -h redis ping || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

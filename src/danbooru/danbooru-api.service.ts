@@ -39,7 +39,7 @@ export class DanbooruApiService {
 			async (error: AxiosError) => {
 				const maxRetries = 3
 				const config = error.config as any // Type assertion for retryCount
-				let retryCount = config.retryCount || 0
+				const retryCount = config.retryCount || 0
 				if (
 					retryCount < maxRetries &&
 					(error.code === 'ECONNABORTED' ||
@@ -67,7 +67,7 @@ export class DanbooruApiService {
 			}
 			const response = await this.axiosInstance.get<DanbooruApiResponse>(url)
 
-			const apiResponse = response.data as DanbooruApiResponse
+			const apiResponse = response.data
 			const posts = apiResponse.data
 			if (!posts || posts.length === 0) {
 				return null

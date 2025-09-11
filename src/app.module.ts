@@ -17,14 +17,12 @@ import { RedisModule } from './common/redis/redis.module'
 				CACHE_TTL_SECONDS: Joi.number().default(3600),
 				DANBOORU_LIMIT: Joi.number().default(1),
 				DANBOORU_RANDOM: Joi.boolean().default(true),
-				PORT: Joi.number().default(3000),
 			}),
 			validationOptions: {
 				abortEarly: false,
 			},
 		}),
 		DanbooruModule,
-		HealthModule,
 		RedisModule,
 	],
 })
