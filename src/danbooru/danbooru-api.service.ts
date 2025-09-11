@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config'
 import axios, { AxiosInstance, AxiosError } from 'axios'
 import { plainToClass } from 'class-transformer'
 import { validate, ValidationError } from 'class-validator'
-import { DanbooruPost } from './interfaces/danbooru-post.interface'
+import { DanbooruPost } from './dto/danbooru-post.class'
 import { API_TIMEOUT_MS } from '../common/constants'
 import xss from 'xss'
 
@@ -76,7 +76,7 @@ export class DanbooruApiService {
 
 			// Runtime validation of first post
 			const rawPost = posts[0]
-			const post = plainToClass(Object, rawPost) as unknown as DanbooruPost
+			const post = plainToClass(DanbooruPost, rawPost)
 			const errors: ValidationError[] = await validate(post, {
 				forbidNonWhitelisted: true,
 			})

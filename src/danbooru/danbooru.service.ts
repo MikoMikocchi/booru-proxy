@@ -11,7 +11,7 @@ import {
   DanbooruSuccessResponse,
   DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
-import { DanbooruPost } from './interfaces/danbooru-post.interface'
+import { DanbooruPost } from './dto/danbooru-post.class'
 import { addToDLQ } from './utils/dlq.util'
 import {
   REQUESTS_STREAM,
