@@ -25,6 +25,8 @@ import {
 	REQUESTS_STREAM,
 	RESPONSES_STREAM,
 	DLQ_STREAM,
+  RATE_WINDOW_SECONDS,
+  DEDUP_TTL_SECONDS,
 } from '../common/constants'
 
 @Injectable()
@@ -118,6 +120,18 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 						const { jobId, query } = requestDto
 
+						// Deduplication check
+						const isDuplicate = await this.redis.sismember('processed_jobs', jobId)
+						if (isDuplicate) {
+							this.logger.warn(`Duplicate job ${jobId} detected, skipping`)
+							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+							return
+						}
+
+						// Mark as processed with TTL
+						await this.redis.sadd('processed_jobs', jobId)
+						await this.redis.expire('processed_jobs', DEDUP_TTL_SECONDS)
+
 						await this.processRequest(jobId, query)
 						// ACK the message
 						await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
@@ -158,10 +172,10 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 			// Distributed rate limiting: check calls per minute
 			const rateLimitPerMinute = this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || RATE_LIMIT_PER_MINUTE
-			const minuteKey = `rate:minute:${Math.floor(Date.now() / 60000)}`
+			const minuteKey = `rate:minute:${Math.floor(Date.now() / (RATE_WINDOW_SECONDS * 1000))}`
 			const currentCount = await this.redis.incr(minuteKey)
 			if (currentCount === 1) {
-				await this.redis.expire(minuteKey, 60)
+				await this.redis.expire(minuteKey, RATE_WINDOW_SECONDS)
 			}
 			if (currentCount > rateLimitPerMinute) {
 				const errorData: DanbooruErrorResponse = {
@@ -186,18 +200,16 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				await this.publishResponse(jobId, errorData)
 				return errorData
 			}
-			const auth = { username: login, password: apiKey }
 
 			const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
 			const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
-			let url = `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=${limit}`
+			let url = `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=${limit}&login=${encodeURIComponent(login)}&api_key=${encodeURIComponent(apiKey)}`
 			if (random) {
 				url += '&random=true'
 			}
 			const response = await axios.get<DanbooruPost[]>(
 				url,
 				{
-					auth,
 					timeout: API_TIMEOUT_MS,
 				},
 			)
