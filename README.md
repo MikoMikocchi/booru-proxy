@@ -1,98 +1,130 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Danbooru Gateway
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+[![Node.js](https://img.shields.io/badge/Node.js-v24-green)](https://nodejs.org/)
+[![NestJS](https://img.shields.io/badge/NestJS-v11-red)](https://nestjs.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-v5.7-blue)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/MikoMikocchi/danbooru-gateway/workflows/CI/badge.svg)](https://github.com/MikoMikocchi/danbooru-gateway/actions)
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+A NestJS microservice that acts as a gateway to the Danbooru API. It processes image search queries via Redis streams, fetches random posts with authentication, and returns structured responses including image URL, tags, author, rating, source, and copyright.
 
-## Description
+## Features
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **Redis Stream Integration**: Consumes requests from `danbooru:requests` stream and publishes responses to `danbooru:responses`.
+- **Danbooru API Client**: Authenticated queries for random image posts matching tags.
+- **Input Validation**: Uses class-validator and DTOs for request validation.
+- **Error Handling**: Logs errors and publishes error responses.
+- **Docker Support**: Easy deployment with Docker Compose (includes Redis).
+- **Testing**: Unit tests with Jest.
+- **CI/CD**: GitHub Actions for linting, testing, and building.
 
-## Project setup
+## Architecture
 
-```bash
-$ npm install
-```
+- **Microservice**: Built with NestJS using Redis transport.
+- **Flow**:
+  1. Producer adds job to Redis stream `danbooru:requests` with `jobId` and `query` (tags).
+  2. Consumer (this service) reads, validates, queries Danbooru API.
+  3. Publishes response to `danbooru:responses` stream.
+- **Dependencies**: Axios for HTTP, ioredis for Redis, class-transformer/validator for DTOs.
+- **Configuration**: Env vars for Redis URL, Danbooru login/API key.
 
-## Compile and run the project
+## Quick Start
 
-```bash
-# development
-$ npm run start
+1. Clone the repo and install dependencies:
 
-# watch mode
-$ npm run start:dev
+   ```bash
+   npm install
+   ```
 
-# production mode
-$ npm run start:prod
-```
+2. Set up environment variables (copy `.env.example` to `.env` and fill in):
 
-## Run tests
+   ```
+   DANBOORU_LOGIN=your_danbooru_login
+   DANBOORU_API_KEY=your_danbooru_api_key
+   REDIS_URL=redis://localhost:6379
+   ```
 
-```bash
-# unit tests
-$ npm run test
+3. Run with Docker (recommended):
 
-# e2e tests
-$ npm run test:e2e
+   ```bash
+   docker-compose up --build
+   ```
 
-# test coverage
-$ npm run test:cov
-```
+4. Or run locally:
+   - Start Redis (e.g., via Docker: `docker run -p 6379:6379 redis:alpine`).
+   - Run the service: `npm run start:dev`.
 
-## Deployment
+## Usage
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+- **Request Format**: Add to Redis stream `danbooru:requests`:
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+  ```javascript
+  // Example using ioredis
+  await redis.xadd(
+  	'danbooru:requests',
+  	'*',
+  	'jobId',
+  	'unique-job-id',
+  	'query',
+  	'cat_ears',
+  )
+  ```
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+- **Response Format**: Read from `danbooru:responses`:
+  - Success: `{ jobId: string, imageUrl: string, author?: string, tags: string, rating: string, source?: string, copyright: string }`
+  - Error: `{ jobId: string, error: string }`
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Example query: Tags like "1girl blue_eyes" fetches a random safe/explicit post.
 
-## Resources
+**Note**: Danbooru requires an account for API access. Posts may include NSFW content based on tags/rating.
 
-Check out a few resources that may come in handy when working with NestJS:
+## Environment Variables
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+- `REDIS_URL`: Redis connection URL (default: `redis://localhost:6379`).
+- `DANBOORU_LOGIN`: Your Danbooru username.
+- `DANBOORU_API_KEY`: Your Danbooru API key (from account settings).
 
-## Support
+See `.env.example` for template.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Development
 
-## Stay in touch
+- **Start Dev Mode**: `npm run start:dev` (watches for changes).
+- **Linting**: `npm run lint` (uses ESLint and Prettier).
+- **Formatting**: `npm run format`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Testing
+
+- Run tests: `npm run test`.
+- Coverage: `npm run test:cov`.
+- Watch mode: `npm run test:watch`.
+- E2E: `npm run test:e2e` (configure as needed).
+
+Includes unit tests for the Danbooru service.
+
+## Docker
+
+- **Build & Run**: `docker-compose up --build`.
+- **Services**:
+  - `redis`: Official Redis image with append-only mode.
+  - `danbooru-worker`: Builds from Dockerfile, connects to Redis, uses env vars.
+- **Production**: Use multi-stage build (Node 24 Alpine), exposes port 3000 (though microservice doesn't HTTP serve).
+
+Customize `.env` for production secrets.
+
+## CI/CD
+
+- GitHub Actions workflow (`.github/workflows/ci.yml`):
+  - Triggers on push/PR to main.
+  - Runs on Node 20.
+  - Installs deps, lints, runs tests with coverage, builds the project.
+
+## Contributing
+
+1. Fork the repo.
+2. Create a feature branch.
+3. Commit changes and run tests/lint.
+4. Open a PR.
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+This project is MIT licensed. See [LICENSE](LICENSE) for details (or add one if missing).
