@@ -1,0 +1,164 @@
+import {
+	Injectable,
+	Logger,
+	OnModuleInit,
+	OnModuleDestroy,
+	Inject,
+} from '@nestjs/common'
+import Redis from 'ioredis'
+import { plainToClass } from 'class-transformer'
+import { validate } from 'class-validator'
+import { CreateRequestDto } from './dto/create-request.dto'
+import { DanbooruService } from './danbooru.service'
+import {
+	REQUESTS_STREAM,
+	RESPONSES_STREAM,
+	DLQ_STREAM,
+	DEDUP_TTL_SECONDS,
+	STREAM_BLOCK_MS,
+} from '../common/constants'
+
+@Injectable()
+export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
+	private readonly logger = new Logger(RedisStreamConsumer.name)
+	private running = true
+
+	constructor(
+		@Inject('REDIS_CLIENT') private readonly redis: Redis,
+		private readonly danbooruService: DanbooruService,
+	) {}
+
+	async onModuleInit() {
+		this.logger.log('Starting Danbooru stream consumer')
+		// Create consumer group if not exists
+		try {
+			await this.redis.xgroup(
+				'CREATE',
+				REQUESTS_STREAM,
+				'danbooru-group',
+				'$',
+				'MKSTREAM',
+			)
+			this.logger.log('Created consumer group danbooru-group')
+		} catch (error) {
+			if (error.message.includes('BUSYGROUP')) {
+				this.logger.log('Consumer group danbooru-group already exists')
+			} else {
+				this.logger.error('Error creating consumer group', error)
+			}
+		}
+		await this.startConsumer()
+	}
+
+	onModuleDestroy() {
+		this.logger.log('Stopping Danbooru stream consumer')
+		this.running = false
+		this.redis.disconnect()
+	}
+
+	private async startConsumer() {
+		while (this.running) {
+			try {
+				type RedisStreamEntry = [string, [string, string[]][]]
+
+				const streams = (await this.redis.xreadgroup(
+					'GROUP',
+					'danbooru-group',
+					'worker-1',
+					'BLOCK',
+					STREAM_BLOCK_MS,
+					'STREAMS',
+					REQUESTS_STREAM,
+					'>',
+				)) as RedisStreamEntry[]
+
+				if (!streams) continue
+
+				for (const [key, messages] of streams) {
+					const messagesTyped = messages as [string, string[]][]
+
+					const promises = messagesTyped.map(async ([id, fields]) => {
+						const jobData: { [key: string]: string } = {}
+						for (let i = 0; i < fields.length; i += 2) {
+							jobData[fields[i]] = fields[i + 1]
+						}
+
+						const requestDto = plainToClass(CreateRequestDto, jobData)
+						const errors = await validate(requestDto)
+						if (errors.length > 0) {
+							const jobId = jobData.jobId || 'unknown'
+							this.logger.warn(
+								`Validation error for job ${jobId}: ${JSON.stringify(errors)}`,
+								jobId,
+							)
+							await this.danbooruService.publishResponse(jobId, {
+								type: 'error',
+								jobId,
+								error: 'Invalid request format',
+							})
+							// Add to dead-letter queue for permanent validation error
+							await this.addToDLQ(jobId, 'Invalid request format', jobData.query || '')
+							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+							return
+						}
+
+						const { jobId, query } = requestDto
+
+						// Deduplication check
+						const isDuplicate = await this.redis.sismember(
+							'processed_jobs',
+							jobId,
+						)
+						if (isDuplicate) {
+							this.logger.warn(
+								`Duplicate job ${jobId} detected, skipping`,
+								jobId,
+							)
+							await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+							return
+						}
+
+						// Mark as processed with TTL
+						await this.redis.sadd('processed_jobs', jobId)
+						await this.redis.expire('processed_jobs', DEDUP_TTL_SECONDS)
+
+						await this.danbooruService.processRequest(jobId, query)
+						// ACK the message
+						await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+					})
+
+					await Promise.all(promises)
+				}
+			} catch (error) {
+				if (this.running) {
+					this.logger.error(
+						'Error in stream consumer',
+						error.stack || error.message,
+					)
+					// Simple exponential backoff for transient errors
+					let delay = 5000
+					for (let attempt = 0; attempt < 5; attempt++) {
+						await new Promise(resolve => setTimeout(resolve, delay))
+						delay = Math.min(delay * 2, 30000)
+						this.logger.warn(
+							`Retry attempt ${attempt + 1} after delay ${delay}ms`,
+						)
+					}
+				}
+			}
+		}
+	}
+
+	async addToDLQ(jobId: string, error: string, query: string) {
+		await this.redis.xadd(
+			DLQ_STREAM,
+			'*',
+			'jobId',
+			jobId,
+			'error',
+			error,
+			'query',
+			query,
+		)
+	}
+}
