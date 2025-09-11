@@ -99,13 +99,20 @@ describe('DanbooruService', () => {
 			expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
 				'danbooru:responses',
 				'*',
-				'jobId', jobId,
-				'imageUrl', mockPost.file_url,
-				'author', mockPost.tag_string_artist,
-				'tags', mockPost.tag_string_general,
-				'rating', mockPost.rating,
-				'source', mockPost.source,
-				'copyright', mockPost.tag_string_copyright,
+				'jobId',
+				jobId,
+				'imageUrl',
+				mockPost.file_url,
+				'author',
+				mockPost.tag_string_artist,
+				'tags',
+				mockPost.tag_string_general,
+				'rating',
+				mockPost.rating,
+				'source',
+				mockPost.source,
+				'copyright',
+				mockPost.tag_string_copyright,
 			)
 		})
 
@@ -158,7 +165,7 @@ describe('DanbooruService', () => {
 
 			const mockFields = ['query', 'hatsune_miku']
 			const mockMessage = ['id', mockFields] as any
-			const mockStream = [ ['danbooru:requests', [mockMessage]] ] as any
+			const mockStream = [['danbooru:requests', [mockMessage]]] as any
 
 			let callCount = 0
 			mockRedisInstance.xread.mockImplementation(async () => {
@@ -166,7 +173,7 @@ describe('DanbooruService', () => {
 				if (callCount === 1) {
 					return mockStream
 				} else {
-					(service as any).running = false
+					;(service as any).running = false
 					return null
 				}
 			})

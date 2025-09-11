@@ -67,7 +67,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 						const jobData: { [key: string]: string } = {}
 						for (let i = 0; i < fields.length; i += 2) {
-							jobData[fields[i] as string] = fields[i + 1] as string
+							jobData[fields[i]] = fields[i + 1]
 						}
 
 						const requestDto = plainToClass(CreateRequestDto, jobData)
