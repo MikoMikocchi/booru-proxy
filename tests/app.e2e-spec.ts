@@ -1,37 +1,49 @@
 import { Test, TestingModule } from '@nestjs/testing'
-import { INestApplication } from '@nestjs/common'
-import request from 'supertest'
-import { ConfigService } from '@nestjs/config'
-import { AppModule } from '../src/app.module'
+import { DanbooruService } from '../src/danbooru/danbooru.service'
+import Redis from 'ioredis'
 
-describe('AppController (e2e)', () => {
-	let app: INestApplication
+describe('DanbooruService (integration)', () => {
+	let service: DanbooruService
+	let mockRedis: jest.Mocked<Redis>
 
 	beforeEach(async () => {
-	  const moduleFixture: TestingModule = await Test.createTestingModule({
-	    imports: [AppModule],
-	  }).compile()
+		mockRedis = {
+			xadd: jest.fn().mockResolvedValue('1-0'),
+			xreadgroup: jest.fn().mockResolvedValue(null),
+			xack: jest.fn().mockResolvedValue(1),
+			get: jest.fn().mockResolvedValue(null),
+			setex: jest.fn().mockResolvedValue('OK'),
+			sadd: jest.fn().mockResolvedValue(1),
+			expire: jest.fn().mockResolvedValue(1),
+			sismember: jest.fn().mockResolvedValue(0),
+			ping: jest.fn().mockResolvedValue('PONG'),
+		} as any
 
-	  app = moduleFixture.createNestApplication()
-	  await app.init()
-	  await app.startAllMicroservices()
-	  const configService = moduleFixture.get(ConfigService)
-	  const port = configService.get('PORT') || 3000
-	  await app.listen(port)
+		const module: TestingModule = await Test.createTestingModule({
+			providers: [
+				DanbooruService,
+				{ provide: 'REDIS_CLIENT', useValue: mockRedis },
+			],
+		}).compile()
+
+		service = module.get<DanbooruService>(DanbooruService)
 	})
 
-	it('/health (GET)', () => {
-		return request(app.getHttpServer())
-			.get('/health')
-			.expect(200)
-			.expect(res => {
-				expect(res.body).toHaveProperty('info')
-				expect(res.body.info).toHaveProperty('redis')
-				expect(res.body.info.redis).toHaveProperty('status', 'up')
-			})
+	it('should process request and publish response', async () => {
+		const jobId = 'test-job'
+		const query = 'hatsune_miku'
+
+		const result = await service.processRequest(jobId, query)
+
+		expect(result.type).toBe('success')
+		expect(mockRedis.xadd).toHaveBeenCalledWith(
+			expect.any(String), // RESPONSES_STREAM
+			'*',
+			expect.anything(),
+		)
 	})
 
-	afterEach(async () => {
-		await app.close()
+	afterEach(() => {
+		jest.clearAllMocks()
 	})
 })

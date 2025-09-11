@@ -1,29 +1,9 @@
 import { NestFactory } from '@nestjs/core'
-import { MicroserviceOptions, Transport } from '@nestjs/microservices'
-import { ConfigService } from '@nestjs/config'
 import { AppModule } from './app.module'
 
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule)
-	const configService = app.get(ConfigService)
-	const redisUrl = configService.get('REDIS_URL') || 'redis://localhost:6379'
-	const url = new URL(redisUrl)
-	const microserviceOptions: MicroserviceOptions = {
-		transport: Transport.REDIS,
-		options: {
-			host: url.hostname,
-			port: Number(url.port) || 6379,
-			username: url.username || undefined,
-			password: url.password || undefined,
-			tls: url.protocol === 'rediss:' ? {} : undefined,
-		},
-	}
-	app.connectMicroservice(microserviceOptions)
-	await app.startAllMicroservices()
-
-	const port = configService.get('PORT') || 3000
-	// No HTTP listen, only microservice with Redis transport
-	console.log('Microservice started with Redis transport')
+	console.log('Microservice started (Redis streams)')
 
 	process.on('SIGINT', async () => {
 		await app.close()
