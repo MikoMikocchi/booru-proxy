@@ -76,7 +76,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       await this.publishResponse(jobId, responseData)
       // Cache the response for 1h if not random
       if (!random) {
-        await this.cacheService.setCache(query, responseData)
+        await this.cacheService.setCache(query, responseData, random)
       }
       return responseData
     } catch (error: unknown) {
@@ -129,7 +129,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     // Skip cache for random queries
     let cached: DanbooruSuccessResponse | null = null
     if (!random) {
-      cached = await this.cacheService.getCachedResponse(query)
+      cached = await this.cacheService.getCachedResponse(query, random)
       if (cached) {
         this.logger.log(`Cache hit for job ${jobId}`, jobId)
         return cached
