@@ -4,14 +4,32 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   danbooru-worker:
     build: .
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     environment:
       - REDIS_URL=redis://redis:6379
       - DANBOORU_LOGIN=${DANBOORU_LOGIN}
       - DANBOORU_API_KEY=${DANBOORU_API_KEY}
+      - PORT=3000
+      - RATE_LIMIT_PER_MINUTE=60
+      - CACHE_TTL_SECONDS=3600
+      - DANBOORU_LIMIT=1
+      - DANBOORU_RANDOM=true
     volumes:
       - ./.env:/app/.env:ro  # Mount .env if needed, but use env vars
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
