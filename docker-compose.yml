@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  danbooru-worker:
+    build: .
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DANBOORU_LOGIN=${DANBOORU_LOGIN}
+      - DANBOORU_API_KEY=${DANBOORU_API_KEY}
+    volumes:
+      - ./.env:/app/.env:ro  # Mount .env if needed, but use env vars
