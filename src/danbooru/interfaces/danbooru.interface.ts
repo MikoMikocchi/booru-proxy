@@ -3,7 +3,8 @@ export interface DanbooruRequest {
 	query: string
 }
 
-export interface DanbooruResponse {
+export interface DanbooruSuccessResponse {
+	type: 'success'
 	jobId: string
 	imageUrl: string
 	author: string | null
@@ -14,6 +15,9 @@ export interface DanbooruResponse {
 }
 
 export interface DanbooruErrorResponse {
+	type: 'error'
 	jobId: string
 	error: string
 }
+
+export type DanbooruResponse = DanbooruSuccessResponse | DanbooruErrorResponse

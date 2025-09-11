@@ -12,6 +12,7 @@ import { validate } from 'class-validator'
 import { CreateRequestDto } from './dto/create-request.dto'
 import {
 	DanbooruResponse,
+	DanbooruSuccessResponse,
 	DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
 import { DanbooruPost } from './interfaces/danbooru-post.interface'
@@ -26,6 +27,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private readonly logger = new Logger(DanbooruService.name)
 	private readonly redis: Redis
 	private running = true
+	private lastApiCall = 0
 
 	constructor(private configService: ConfigService) {
 		const redisUrl: string =
@@ -36,11 +38,29 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			port: Number(url.port) || 6379,
 			username: url.username || undefined,
 			password: url.password || undefined,
+			tls: url.protocol === 'rediss:' ? {} : undefined,
 		})
 	}
 
 	async onModuleInit() {
 		this.logger.log('Starting Danbooru stream consumer')
+		// Create consumer group if not exists
+		try {
+			await this.redis.xgroup(
+				'CREATE',
+				'danbooru:requests',
+				'danbooru-group',
+				'$',
+				'MKSTREAM',
+			)
+			this.logger.log('Created consumer group danbooru-group')
+		} catch (error) {
+			if (error.message.includes('BUSYGROUP')) {
+				this.logger.log('Consumer group danbooru-group already exists')
+			} else {
+				this.logger.error('Error creating consumer group', error)
+			}
+		}
 		await this.startConsumer()
 	}
 
@@ -53,18 +73,21 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private async startConsumer() {
 		while (this.running) {
 			try {
-				const streams = await this.redis.xread(
+				const streams = await this.redis.xreadgroup(
+					'GROUP',
+					'danbooru-group',
+					'worker-1',
 					'BLOCK',
 					STREAM_BLOCK_MS,
 					'STREAMS',
 					'danbooru:requests',
-					'$',
+					'>',
 				)
 
 				if (!streams) continue
 
-				for (const stream of streams) {
-					const messages = stream[1]
+				for (const stream of streams as any[]) {
+					const messages = stream[1] as [string, string[]][]
 
 					for (const message of messages) {
 						const id = message[0]
@@ -82,8 +105,21 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 								`Validation error for job ${jobData.jobId || 'unknown'}: ${JSON.stringify(errors)}`,
 							)
 							await this.publishResponse(jobData.jobId || 'unknown', {
+								type: 'error',
+								jobId: jobData.jobId || 'unknown',
 								error: 'Invalid request format',
 							})
+							// Add to dead-letter queue for permanent validation error
+							await this.redis.xadd(
+								'danbooru-dlq',
+								'*',
+								'jobId',
+								jobData.jobId || 'unknown',
+								'error',
+								'Invalid request format',
+								'query',
+								jobData.query || '',
+							)
 							await this.redis.xdel('danbooru:requests', id)
 							continue
 						}
@@ -91,7 +127,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 						const { jobId, query } = requestDto
 
 						await this.processRequest(jobId, query)
-						// Remove processed message
+						// ACK the message
+						await this.redis.xack('danbooru:requests', 'danbooru-group', id)
+						// Remove if needed, but with group, xdel not necessary if ACKed
 						await this.redis.xdel('danbooru:requests', id)
 					}
 				}
@@ -115,10 +153,23 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	async processRequest(
 		jobId: string,
 		query: string,
-	): Promise<DanbooruResponse | DanbooruErrorResponse> {
+	): Promise<DanbooruResponse> {
 		this.logger.log(`Processing job ${jobId} for query: ${query}`)
 
 		try {
+			// Simple rate limiting: 1 call per minute for educational purpose
+			const now = Date.now()
+			if (now - this.lastApiCall < 60000) {
+				const errorData: DanbooruErrorResponse = {
+					type: 'error',
+					jobId,
+					error: 'Rate limit exceeded. Try again in 1 minute.',
+				}
+				await this.publishResponse(jobId, errorData)
+				return errorData
+			}
+			this.lastApiCall = now
+
 			const login: string =
 				this.configService.get<string>('DANBOORU_LOGIN') ?? ''
 			const apiKey: string =
@@ -138,7 +189,25 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 			const posts: DanbooruPost[] = response.data
 			if (posts.length === 0) {
-				throw new Error('No posts found for the query')
+				const errorMessage = 'No posts found for the query'
+				const errorData: DanbooruErrorResponse = {
+					type: 'error',
+					jobId,
+					error: errorMessage,
+				}
+				await this.publishResponse(jobId, errorData)
+				// Add to dead-letter queue for permanent API error
+				await this.redis.xadd(
+					'danbooru-dlq',
+					'*',
+					'jobId',
+					jobId,
+					'error',
+					errorMessage,
+					'query',
+					query,
+				)
+				return errorData
 			}
 
 			const post: DanbooruPost = posts[0]
@@ -153,7 +222,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
 			)
 
-			const responseData: DanbooruResponse = {
+			const responseData: DanbooruSuccessResponse = {
+				type: 'success',
 				jobId,
 				imageUrl,
 				author,
@@ -168,16 +238,35 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error)
 			this.logger.error(`Error processing job ${jobId}: ${errorMessage}`)
-			const errorData: DanbooruErrorResponse = { jobId, error: errorMessage }
+			const errorData: DanbooruErrorResponse = {
+				type: 'error',
+				jobId,
+				error: errorMessage,
+			}
 			await this.publishResponse(jobId, errorData)
+			// Add to dead-letter queue for permanent processing error
+			await this.redis.xadd(
+				'danbooru-dlq',
+				'*',
+				'jobId',
+				jobId,
+				'error',
+				errorMessage,
+				'query',
+				query,
+			)
 			return errorData
 		}
 	}
 
-	private async publishResponse(jobId: string, data: Record<string, any>) {
+	private async publishResponse(jobId: string, data: DanbooruResponse) {
 		const responseKey = 'danbooru:responses'
-		const message = { jobId, ...data }
-		await this.redis.xadd(responseKey, '*', ...Object.entries(message).flat())
+		const message = { ...data }
+		const entries = Object.entries(message).flatMap(([k, v]) => [
+			k,
+			v == null ? 'null' : v.toString(),
+		])
+		await this.redis.xadd(responseKey, '*', ...entries)
 		this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
 	}
 }

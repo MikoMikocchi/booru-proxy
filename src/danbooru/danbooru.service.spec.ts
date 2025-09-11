@@ -90,6 +90,7 @@ describe('DanbooruService', () => {
 				}),
 			)
 			expect(result).toEqual<DanbooruResponse>({
+				type: 'success',
 				jobId,
 				imageUrl: 'https://example.com/image.jpg',
 				author: 'artist',
@@ -125,6 +126,7 @@ describe('DanbooruService', () => {
 			const result = await service.processRequest(jobId, query)
 
 			expect(result).toEqual<DanbooruErrorResponse>({
+				type: 'error',
 				jobId,
 				error: 'Request failed with status code 401',
 			})
@@ -137,6 +139,7 @@ describe('DanbooruService', () => {
 			const result = await service.processRequest(jobId, query)
 
 			expect(result).toEqual<DanbooruErrorResponse>({
+				type: 'error',
 				jobId,
 				error: 'No posts found for the query',
 			})
