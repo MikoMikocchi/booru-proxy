@@ -56,7 +56,8 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
         this.logger.error('Error creating consumer group', error)
       }
     }
-    await this.startConsumer()
+    // Start consumer in microservice context
+    this.startConsumer()
   }
 
   async onModuleDestroy() {
