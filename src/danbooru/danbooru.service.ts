@@ -15,6 +15,11 @@ import {
 	DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
 import { DanbooruPost } from './interfaces/danbooru-post.interface'
+import {
+	API_TIMEOUT_MS,
+	RETRY_DELAY_MS,
+	STREAM_BLOCK_MS,
+} from '../common/constants'
 
 @Injectable()
 export class DanbooruService implements OnModuleInit, OnModuleDestroy {
@@ -50,7 +55,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			try {
 				const streams = await this.redis.xread(
 					'BLOCK',
-					5000,
+					STREAM_BLOCK_MS,
 					'STREAMS',
 					'danbooru:requests',
 					'$',
@@ -93,8 +98,15 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			} catch (error) {
 				if (this.running) {
 					this.logger.error('Error in stream consumer', error)
-					// Wait before retry
-					await new Promise(resolve => setTimeout(resolve, 5000))
+					// Simple exponential backoff for transient errors
+					let delay = RETRY_DELAY_MS
+					for (let attempt = 0; attempt < 5; attempt++) {
+						await new Promise(resolve => setTimeout(resolve, delay))
+						delay = Math.min(delay * 2, 30000) // Double delay, cap at 30s
+						this.logger.warn(
+							`Retry attempt ${attempt + 1} after delay ${delay}ms`,
+						)
+					}
 				}
 			}
 		}
@@ -120,7 +132,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				`https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=1&random=true`,
 				{
 					auth,
-					timeout: 10000,
+					timeout: API_TIMEOUT_MS,
 				},
 			)
 
