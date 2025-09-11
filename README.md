@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/MikoMikocchi/danbooru-gateway/workflows/CI/badge.svg)](https://github.com/MikoMikocchi/danbooru-gateway/actions)
 
-A NestJS microservice that acts as a gateway to the Danbooru API. It processes image search queries via Redis streams, fetches random posts with authentication, and returns structured responses including image URL, tags, author, rating, source, and copyright.
+A NestJS worker that processes image search queries to the Danbooru API via Redis streams. It fetches random posts with authentication and publishes structured responses to another stream, including image URL, tags, author, rating, source, and copyright.
 
 ## Features
 
@@ -107,7 +107,7 @@ Includes unit tests for the Danbooru service.
 - **Services**:
   - `redis`: Official Redis image with append-only mode.
   - `danbooru-worker`: Builds from Dockerfile, connects to Redis, uses env vars.
-- **Production**: Use multi-stage build (Node 24 Alpine), exposes port 3000 (though microservice doesn't HTTP serve).
+- **Production**: Use multi-stage build (Node 24 Alpine) for the worker.
 
 Customize `.env` for production secrets.
 
