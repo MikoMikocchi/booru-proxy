@@ -22,8 +22,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	private running = true
 
 	constructor(private configService: ConfigService) {
-		const redisUrl =
-			this.configService.get('REDIS_URL') || 'redis://localhost:6379'
+		const redisUrl: string =
+			this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
 		const url = new URL(redisUrl)
 		this.redis = new Redis({
 			host: url.hostname,
@@ -35,10 +35,10 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 
 	async onModuleInit() {
 		this.logger.log('Starting Danbooru stream consumer')
-		this.startConsumer()
+		await this.startConsumer()
 	}
 
-	async onModuleDestroy() {
+	onModuleDestroy() {
 		this.logger.log('Stopping Danbooru stream consumer')
 		this.running = false
 		this.redis.disconnect()
@@ -58,7 +58,6 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				if (!streams) continue
 
 				for (const stream of streams) {
-					const streamName = stream[0]
 					const messages = stream[1]
 
 					for (const message of messages) {
@@ -107,11 +106,25 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 		this.logger.log(`Processing job ${jobId} for query: ${query}`)
 
 		try {
-			const login = this.configService.get('DANBOORU_LOGIN')
-			const apiKey = this.configService.get('DANBOORU_API_KEY')
+			const login: string =
+				this.configService.get<string>('DANBOORU_LOGIN') ?? ''
+			const apiKey: string =
+				this.configService.get<string>('DANBOORU_API_KEY') ?? ''
+			if (!login || !apiKey) {
+				throw new Error('DANBOORU_LOGIN and DANBOORU_API_KEY must be set')
+			}
 			const auth = { username: login, password: apiKey }
 
-			const response = await axios.get(
+			interface DanbooruPost {
+				file_url: string
+				tag_string_artist?: string
+				tag_string_general: string
+				rating: string
+				source?: string
+				tag_string_copyright: string
+			}
+
+			const response = await axios.get<DanbooruPost[]>(
 				`https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(query)}&limit=1&random=true`,
 				{
 					auth,
@@ -119,18 +132,18 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				},
 			)
 
-			const posts = response.data
+			const posts: DanbooruPost[] = response.data
 			if (posts.length === 0) {
 				throw new Error('No posts found for the query')
 			}
 
-			const post = posts[0]
+			const post: DanbooruPost = posts[0]
 			const imageUrl = post.file_url
-			const author = post.tag_string_artist || null
-			const tags = post.tag_string_general || ''
+			const author = post.tag_string_artist ?? null
+			const tags = post.tag_string_general
 			const rating = post.rating
-			const source = post.source || null
-			const copyright = post.tag_string_copyright || ''
+			const source = post.source ?? null
+			const copyright = post.tag_string_copyright
 
 			this.logger.log(
 				`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
@@ -147,9 +160,11 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 			}
 			await this.publishResponse(jobId, responseData)
 			return responseData
-		} catch (error) {
-			this.logger.error(`Error processing job ${jobId}: ${error.message}`)
-			const errorData: DanbooruErrorResponse = { jobId, error: error.message }
+		} catch (error: unknown) {
+			const errorMessage =
+				error instanceof Error ? error.message : String(error)
+			this.logger.error(`Error processing job ${jobId}: ${errorMessage}`)
+			const errorData: DanbooruErrorResponse = { jobId, error: errorMessage }
 			await this.publishResponse(jobId, errorData)
 			return errorData
 		}

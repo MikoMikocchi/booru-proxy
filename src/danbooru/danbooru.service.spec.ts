@@ -1,5 +1,7 @@
 import 'reflect-metadata'
 
+/* eslint-disable @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-return,@typescript-eslint/unbound-method,@typescript-eslint/require-await */
+
 import { Test, TestingModule } from '@nestjs/testing'
 import { ConfigService } from '@nestjs/config'
 import { DanbooruService } from './danbooru.service'
@@ -23,22 +25,29 @@ describe('DanbooruService', () => {
 	let mockConfigService: jest.Mocked<ConfigService>
 	const mockAxios = axios as jest.Mocked<typeof axios>
 	const mockRedisConstructor = Redis as jest.MockedClass<typeof Redis>
-	let mockRedisInstance: jest.Mocked<Redis>
+	let mockRedisInstance: any
 
 	beforeEach(async () => {
 		mockConfigService = {
-			get: jest.fn(),
-		} as any
+			get: jest.fn().mockImplementation((key: string): string | null => {
+				if (key === 'DANBOORU_LOGIN') return 'login'
+				if (key === 'DANBOORU_API_KEY') return 'key'
+				if (key === 'REDIS_URL') return 'redis://localhost:6379'
+				return null
+			}),
+		} as unknown as jest.Mocked<ConfigService>
 
 		mockRedisInstance = {
-			xadd: jest.fn(),
-			xdel: jest.fn(),
-			xread: jest.fn(),
-			disconnect: jest.fn(),
+			xadd: jest.fn().mockResolvedValue('response-id'),
+			xdel: jest.fn().mockResolvedValue(1),
+			xread: jest.fn().mockResolvedValue(null),
+			disconnect: jest.fn().mockResolvedValue(undefined),
 		} as any
 
 		mockRedisConstructor.mockImplementation(() => mockRedisInstance)
-		;(plainToClass as jest.Mock).mockImplementation((dto, obj) => ({ ...obj }))
+		;(plainToClass as jest.Mock).mockImplementation((dto: any, obj: any) => ({
+			...obj,
+		}))
 
 		const module: TestingModule = await Test.createTestingModule({
 			providers: [
@@ -60,12 +69,6 @@ describe('DanbooruService', () => {
 		const query = 'hatsune_miku 1girl'
 
 		it('should process request and return DanbooruResponse on success', async () => {
-			mockConfigService.get.mockImplementation((key: string) => {
-				if (key === 'DANBOORU_LOGIN') return 'login'
-				if (key === 'DANBOORU_API_KEY') return 'key'
-				return null
-			})
-
 			const mockPost = {
 				file_url: 'https://example.com/image.jpg',
 				tag_string_artist: 'artist',
@@ -73,10 +76,9 @@ describe('DanbooruService', () => {
 				rating: 's',
 				source: 'https://source.com',
 				tag_string_copyright: 'copyright',
-			}
+			} as any
 
 			mockAxios.get.mockResolvedValue({ data: [mockPost] })
-			mockRedisInstance.xadd.mockResolvedValue('response-id')
 
 			const result = await service.processRequest(jobId, query)
 
@@ -117,15 +119,8 @@ describe('DanbooruService', () => {
 		})
 
 		it('should return DanbooruErrorResponse on API error', async () => {
-			mockConfigService.get.mockImplementation((key: string) => {
-				if (key === 'DANBOORU_LOGIN') return 'login'
-				if (key === 'DANBOORU_API_KEY') return 'key'
-				return null
-			})
-
-			mockAxios.get.mockRejectedValue({
-				message: 'Request failed with status code 401',
-			})
+			const mockError = new Error('Request failed with status code 401')
+			mockAxios.get.mockRejectedValue(mockError)
 
 			const result = await service.processRequest(jobId, query)
 
@@ -137,12 +132,6 @@ describe('DanbooruService', () => {
 		})
 
 		it('should return error if no posts found', async () => {
-			mockConfigService.get.mockImplementation((key: string) => {
-				if (key === 'DANBOORU_LOGIN') return 'login'
-				if (key === 'DANBOORU_API_KEY') return 'key'
-				return null
-			})
-
 			mockAxios.get.mockResolvedValue({ data: [] })
 
 			const result = await service.processRequest(jobId, query)
@@ -156,11 +145,12 @@ describe('DanbooruService', () => {
 
 	describe('validation in consumer', () => {
 		it('should publish error on invalid DTO', async () => {
+			const validationError = {
+				property: 'jobId',
+				constraints: { isNotEmpty: 'jobId should not be empty' },
+			} as any
 			;(classValidator.validate as jest.Mock).mockResolvedValue([
-				{
-					property: 'jobId',
-					constraints: { isNotEmpty: 'jobId should not be empty' },
-				},
+				validationError,
 			])
 
 			const mockFields = ['query', 'hatsune_miku']

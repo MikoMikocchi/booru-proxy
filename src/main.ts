@@ -18,14 +18,15 @@ async function bootstrap() {
 
 	await app.listen()
 
-	process.on('SIGINT', async () => {
-		await app.close()
+	process.on('SIGINT', () => {
+		void app.close()
 		process.exit(0)
 	})
 
-	process.on('SIGTERM', async () => {
-		await app.close()
+	process.on('SIGTERM', () => {
+		void app.close()
 		process.exit(0)
 	})
 }
-bootstrap()
+
+void bootstrap()
