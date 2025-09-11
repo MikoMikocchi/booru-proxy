@@ -2,6 +2,10 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config'
 import axios from 'axios'
 import Redis from 'ioredis'
+import { plainToClass } from 'class-transformer'
+import { validate } from 'class-validator'
+import { CreateRequestDto } from './dto/create-request.dto'
+import { DanbooruResponse, DanbooruErrorResponse } from './types'
 
 @Injectable()
 export class DanbooruService implements OnModuleInit, OnModuleDestroy {
@@ -58,16 +62,20 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 							jobData[fields[i] as string] = fields[i + 1] as string
 						}
 
-						const { jobId, query } = jobData
-
-						if (jobId && query) {
-							await this.processRequest(jobId, query)
-							// Remove processed message
+						const requestDto = plainToClass(CreateRequestDto, jobData)
+						const errors = await validate(requestDto)
+						if (errors.length > 0) {
+							this.logger.warn(`Validation error for job ${jobData.jobId || 'unknown'}: ${JSON.stringify(errors)}`)
+							await this.publishResponse(jobData.jobId || 'unknown', { error: 'Invalid request format' })
 							await this.redis.xdel('danbooru:requests', id)
-						} else {
-							this.logger.warn(`Invalid message format in stream: ${id}`)
-							await this.redis.xdel('danbooru:requests', id)
+							continue
 						}
+
+						const { jobId, query } = requestDto
+
+						await this.processRequest(jobId, query)
+						// Remove processed message
+						await this.redis.xdel('danbooru:requests', id)
 					}
 				}
 			} catch (error) {
@@ -83,7 +91,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 	async processRequest(
 		jobId: string,
 		query: string,
-	): Promise<{ imageUrl?: string; error?: string }> {
+	): Promise<DanbooruResponse | DanbooruErrorResponse> {
 		this.logger.log(`Processing job ${jobId} for query: ${query}`)
 
 		try {
@@ -104,21 +112,30 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
 				throw new Error('No posts found for the query')
 			}
 
-			const imageUrl = posts[0].file_url
-			this.logger.log(`Found image for job ${jobId}: ${imageUrl}`)
+			const post = posts[0]
+			const imageUrl = post.file_url
+			const author = post.tag_string_artist || null
+			const tags = post.tag_string_general || ''
+			const rating = post.rating
+			const source = post.source || null
+			const copyright = post.tag_string_copyright || ''
 
-			await this.publishResponse(jobId, { imageUrl })
-			return { imageUrl }
+			this.logger.log(`Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`)
+
+			const responseData: DanbooruResponse = { jobId, imageUrl, author, tags, rating, source, copyright }
+			await this.publishResponse(jobId, responseData)
+			return responseData
 		} catch (error) {
 			this.logger.error(`Error processing job ${jobId}: ${error.message}`)
-			await this.publishResponse(jobId, { error: error.message })
-			return { error: error.message }
+			const errorData: DanbooruErrorResponse = { jobId, error: error.message }
+			await this.publishResponse(jobId, errorData)
+			return errorData
 		}
 	}
 
 	private async publishResponse(
 		jobId: string,
-		data: { imageUrl?: string; error?: string },
+		data: Record<string, any>,
 	) {
 		const responseKey = 'danbooru:responses'
 		const message = { jobId, ...data }
