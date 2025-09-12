@@ -1,15 +1,16 @@
 import Redis from 'ioredis'
-import { DLQ_STREAM, DEAD_QUEUE_STREAM } from '../../common/constants'
 
 export async function addToDLQ(
   redis: Redis,
+  apiName: string,
   jobId: string,
   errorMessage: string,
   query: string,
   retryCount = 0,
 ): Promise<void> {
+  const dlqStream = `${apiName}-dlq`
   await redis.xadd(
-    DLQ_STREAM,
+    dlqStream,
     '*',
     'jobId',
     jobId,
@@ -19,18 +20,22 @@ export async function addToDLQ(
     query,
     'retryCount',
     retryCount.toString(),
+    'apiName',
+    apiName,
   )
 }
 
 export async function moveToDeadQueue(
   redis: Redis,
+  apiName: string,
   jobId: string,
   errorMessage: string,
   query: string,
   finalError?: string,
 ): Promise<void> {
+  const deadQueueStream = `${apiName}-dead`
   await redis.xadd(
-    DEAD_QUEUE_STREAM,
+    deadQueueStream,
     '*',
     'jobId',
     jobId,
@@ -42,5 +47,7 @@ export async function moveToDeadQueue(
     finalError || 'Max retries exceeded',
     'timestamp',
     Date.now().toString(),
+    'apiName',
+    apiName,
   )
 }
