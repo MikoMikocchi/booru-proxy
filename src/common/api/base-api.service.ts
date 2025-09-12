@@ -159,6 +159,59 @@ export abstract class BaseApiService {
     }
   }
 
+  /**
+   * Invalidate cache entries for the API using pattern-based matching
+   * @param apiPrefix - API identifier (e.g., 'danbooru', 'gelbooru')
+   * @param query - Optional specific query to invalidate
+   * @param random - Optional flag to target random vs deterministic caches
+   * @returns Number of invalidated cache entries
+   */
+  async invalidateCache(apiPrefix: string, query?: string, random?: boolean): Promise<number> {
+    if (!this.cacheService) {
+      this.logger.warn(`${this.constructor.name}: CacheService not available for invalidation`);
+      return 0;
+    }
+
+    let deletedCount = 0;
+
+    // Generate dynamic cache patterns based on apiPrefix
+    const cachePrefix = 'cache'; // From constants.CACHE_PREFIX
+    const basePattern = `${cachePrefix}:${apiPrefix}:*`;
+
+    // 1. Always invalidate all API-specific caches if no query provided
+    if (!query) {
+      deletedCount += await this.cacheService.invalidate(basePattern);
+      this.logger.debug(`${this.constructor.name}: Invalidated all caches for ${apiPrefix} (${deletedCount} keys)`);
+      return deletedCount;
+    }
+
+    // 2. Query-specific invalidation with optional random filtering
+    const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ');
+    const queryHash = require('crypto').createHash('md5').update(normalizedQuery).digest('hex');
+
+    // Build specific pattern for this query
+    let queryPattern = `${cachePrefix}:${apiPrefix}:posts:${queryHash}`;
+
+    if (random !== undefined) {
+      queryPattern += `:random=${random ? 1 : 0}`;
+    }
+
+    // Add wildcard for limit and tag suffixes
+    queryPattern += `:*`;
+
+    deletedCount += await this.cacheService.invalidate(queryPattern);
+
+    // 3. Also invalidate broader API posts pattern for related caches
+    const apiPostsPattern = `${cachePrefix}:${apiPrefix}:posts:*`;
+    deletedCount += await this.cacheService.invalidate(apiPostsPattern);
+
+    this.logger.debug(
+      `${this.constructor.name}: Invalidated ${deletedCount} cache entries for ${apiPrefix} query "${normalizedQuery.substring(0, 20)}..." (random: ${random})`
+    );
+
+    return deletedCount;
+  }
+
   protected sanitizeResponse(data: any): any {
     // Default sanitization - override in subclasses for specific fields
     if (typeof data === 'object') {
