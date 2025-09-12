@@ -20,6 +20,7 @@ import {
   getStreamName,
 } from '../../common/constants'
 import * as crypto from 'crypto'
+import { encrypt, decrypt } from '../crypto/crypto.util'
 import { ModuleRef } from '@nestjs/core'
 
 @Processor('danbooru-requests', { concurrency: 5 })
@@ -57,25 +58,33 @@ export class RedisStreamConsumer
   private async validateMessage(
     data: { query: string; clientId?: string; apiPrefix?: string },
     apiPrefix: string,
-    jobId: string
+    jobId: string,
   ): Promise<{ valid: boolean; error?: any }> {
     try {
       // Ensure apiPrefix is set in validation config
-      const validationData = { ...data, apiPrefix };
-      const validation = await this.validationService.validateRequest(validationData);
+      const validationData = { ...data, apiPrefix }
+      const validation =
+        await this.validationService.validateRequest(validationData)
 
       if (!validation.valid) {
-        const queryHash = crypto.createHash('sha256').update(data.query).digest('hex').slice(0, 8);
+        const queryHash = crypto
+          .createHash('sha256')
+          .update(data.query)
+          .digest('hex')
+          .slice(0, 8)
         this.logger.warn(
           `Validation failed for job ${jobId} (${apiPrefix}): ${validation.error.error} (query hash: ${queryHash})`,
           jobId,
-        );
-        return { valid: false, error: validation.error };
+        )
+        return { valid: false, error: validation.error }
       }
 
-      return { valid: true, error: null };
+      return { valid: true, error: null }
     } catch (error) {
-      this.logger.error(`Validation service error for job ${jobId} (${apiPrefix}): ${error.message}`, jobId);
+      this.logger.error(
+        `Validation service error for job ${jobId} (${apiPrefix}): ${error.message}`,
+        jobId,
+      )
       return {
         valid: false,
         error: {
@@ -83,9 +92,9 @@ export class RedisStreamConsumer
           jobId,
           error: 'Validation service unavailable',
           code: 'VALIDATION_ERROR',
-          apiPrefix
-        }
-      };
+          apiPrefix,
+        },
+      }
     }
   }
 
@@ -99,18 +108,27 @@ export class RedisStreamConsumer
   private async dedupCheck(
     apiPrefix: string,
     query: string,
-    jobId: string
+    jobId: string,
   ): Promise<boolean> {
     try {
-      const hasDuplicate = await dedupCheck(this.redis, apiPrefix, query, jobId);
+      const hasDuplicate = await dedupCheck(this.redis, apiPrefix, query, jobId)
       if (hasDuplicate) {
-        const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
-        this.logger.debug(`DLQ duplicate detected for ${apiPrefix} job ${jobId} (query hash: ${queryHash})`);
+        const queryHash = crypto
+          .createHash('sha256')
+          .update(query)
+          .digest('hex')
+          .slice(0, 8)
+        this.logger.debug(
+          `DLQ duplicate detected for ${apiPrefix} job ${jobId} (query hash: ${queryHash})`,
+        )
       }
-      return hasDuplicate;
+      return hasDuplicate
     } catch (error) {
-      this.logger.error(`Dedup check failed for ${apiPrefix} job ${jobId}: ${error.message}`, jobId);
-      return false; // Allow processing if dedup check fails to avoid blocking
+      this.logger.error(
+        `Dedup check failed for ${apiPrefix} job ${jobId}: ${error.message}`,
+        jobId,
+      )
+      return false // Allow processing if dedup check fails to avoid blocking
     }
   }
 
@@ -126,46 +144,59 @@ export class RedisStreamConsumer
     jobId: string,
     query: string,
     clientId?: string,
-    apiPrefix: string = 'danbooru'
+    apiPrefix: string = 'danbooru',
   ): Promise<void> {
     try {
       // Get the appropriate service based on apiPrefix
-      let apiService: any;
+      let apiService: any
       switch (apiPrefix.toLowerCase()) {
         case 'danbooru':
           if (!this.danbooruService) {
-            this.danbooruService = this.moduleRef.get(DanbooruService, { strict: false });
+            this.danbooruService = this.moduleRef.get(DanbooruService, {
+              strict: false,
+            })
           }
-          apiService = this.danbooruService;
-          break;
+          apiService = this.danbooruService
+          break
         // Add more API services here as they are implemented
         default:
-          const errorMsg = `Unsupported API provider: ${apiPrefix}`;
-          this.logger.error(errorMsg, jobId);
-          throw new Error(errorMsg);
+          const errorMsg = `Unsupported API provider: ${apiPrefix}`
+          this.logger.error(errorMsg, jobId)
+          throw new Error(errorMsg)
       }
 
       if (!apiService) {
-        throw new Error(`API service not available for ${apiPrefix}`);
+        throw new Error(`API service not available for ${apiPrefix}`)
       }
 
       // Process the request using the API service
-      const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
-      this.logger.debug(`Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`);
+      const queryHash = crypto
+        .createHash('sha256')
+        .update(query)
+        .digest('hex')
+        .slice(0, 8)
+      this.logger.debug(
+        `Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`,
+      )
 
-      await apiService.processRequest(jobId, query, clientId);
+      await apiService.processRequest(jobId, query, clientId)
 
       // Invalidate related caches after successful processing (if service supports it)
       // Note: Cache invalidation should be handled by the specific API service
-      this.logger.debug(`Cache invalidation responsibility delegated to ${apiPrefix} service for job ${jobId}`);
-
+      this.logger.debug(
+        `Cache invalidation responsibility delegated to ${apiPrefix} service for job ${jobId}`,
+      )
     } catch (error) {
-      const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
+      const queryHash = crypto
+        .createHash('sha256')
+        .update(query)
+        .digest('hex')
+        .slice(0, 8)
       this.logger.error(
         `Job processing failed for ${apiPrefix} job ${jobId} (query hash: ${queryHash}): ${error.message}`,
-        jobId
-      );
-      throw error;
+        jobId,
+      )
+      throw error
     }
   }
 
@@ -173,81 +204,109 @@ export class RedisStreamConsumer
    * Main job processing method - refactored to use extracted helper methods
    * Supports multiple APIs via apiPrefix parameter and getStreamName for dynamic streams
    */
-  async process(job: Job<{ query: string; clientId?: string; apiPrefix?: string }>) {
-    const jobId = crypto.randomUUID();
-    const data = job.data;
-    const { query, clientId, apiPrefix = 'danbooru' } = data;
-    const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
+  async process(
+    job: Job<{ query: string; clientId?: string; apiPrefix?: string }>,
+  ) {
+    const jobId = crypto.randomUUID()
+    const data = job.data
+    const { query, clientId, apiPrefix = 'danbooru' } = data
+    const queryHash = crypto
+      .createHash('sha256')
+      .update(query)
+      .digest('hex')
+      .slice(0, 8)
 
     this.logger.log(
       `Processing ${apiPrefix} job ${jobId} for query (${query.length} chars, hash: ${queryHash})`,
       jobId,
-    );
+    )
 
     // 1. Query-level locking with apiPrefix prefix to prevent cross-API conflicts
-    const fullQueryHash = crypto.createHash('sha256').update(query).digest('hex');
-    const lockKey = `lock:query:${apiPrefix}:${fullQueryHash}`;
-    const lockAcquired = await this.acquireLock(lockKey, jobId);
+    const fullQueryHash = crypto
+      .createHash('sha256')
+      .update(query)
+      .digest('hex')
+    const lockKey = `lock:query:${apiPrefix}:${fullQueryHash}`
+    const lockAcquired = await this.acquireLock(lockKey, jobId)
 
     if (!lockAcquired) {
       this.logger.warn(
         `Failed to acquire query lock for ${apiPrefix} job ${jobId} (hash: ${queryHash}), skipping`,
         jobId,
-      );
+      )
 
-      const responseKey = getStreamName(apiPrefix, 'responses');
+      const responseKey = getStreamName(apiPrefix, 'responses')
       const errorResponse = JSON.stringify({
         type: 'error',
         jobId,
         error: 'Query currently being processed - please wait and try again',
         timestamp: Date.now(),
-      });
+      })
 
-      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
-      return { skipped: true, reason: 'lock failed' };
+      await this.redis.xadd(
+        responseKey,
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        errorResponse,
+      )
+      return { skipped: true, reason: 'lock failed' }
     }
 
     try {
       // 2. Job-level deduplication as final safeguard
-      const processedKey = `processed:${jobId}`;
+      const processedKey = `processed:${jobId}`
       const result = await this.redis.set(
         processedKey,
         '1',
         'EX',
         DEDUP_TTL_SECONDS,
         'NX',
-      );
+      )
 
       if (result !== 'OK') {
-        this.logger.warn(`Duplicate job ${jobId} detected, skipping`, jobId);
-        return { skipped: true, reason: 'job duplicate' };
+        this.logger.warn(`Duplicate job ${jobId} detected, skipping`, jobId)
+        return { skipped: true, reason: 'job duplicate' }
       }
 
       // 3. DLQ duplicate check using extracted method
-      const hasDlqDuplicate = await this.dedupCheck(apiPrefix, query, jobId);
+      const hasDlqDuplicate = await this.dedupCheck(apiPrefix, query, jobId)
       if (hasDlqDuplicate) {
         this.logger.warn(
           `Recent duplicate query found in DLQ for ${apiPrefix} job ${jobId} (hash: ${queryHash}), skipping`,
           jobId,
-        );
+        )
 
-        const responseKey = getStreamName(apiPrefix, 'responses');
+        const responseKey = getStreamName(apiPrefix, 'responses')
         const errorResponse = JSON.stringify({
           type: 'error',
           jobId,
-          error: 'Duplicate request detected in recent failures - please try again later',
+          error:
+            'Duplicate request detected in recent failures - please try again later',
           timestamp: Date.now(),
-        });
+        })
 
-        await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
-        return { skipped: true, reason: 'DLQ duplicate' };
+        await this.redis.xadd(
+          responseKey,
+          '*',
+          'jobId',
+          jobId,
+          'data',
+          errorResponse,
+        )
+        return { skipped: true, reason: 'DLQ duplicate' }
       }
 
       // 4. Message validation using extracted method
-      const validationResult = await this.validateMessage(data, apiPrefix, jobId);
+      const validationResult = await this.validateMessage(
+        data,
+        apiPrefix,
+        jobId,
+      )
       if (!validationResult.valid) {
         // Publish validation error response
-        const responseKey = getStreamName(apiPrefix, 'responses');
+        const responseKey = getStreamName(apiPrefix, 'responses')
         await this.redis.xadd(
           responseKey,
           '*',
@@ -255,62 +314,70 @@ export class RedisStreamConsumer
           jobId,
           'data',
           JSON.stringify({ ...validationResult.error, timestamp: Date.now() }),
-        );
+        )
 
-        // Add to DLQ with query hash for privacy (store length for debugging)
-        const hasValidationDlqDuplicate = await this.dedupCheck(apiPrefix, query, jobId);
+        // Add to DLQ with encrypted query for privacy
+        const hasValidationDlqDuplicate = await this.dedupCheck(
+          apiPrefix,
+          query,
+          jobId,
+        )
         if (!hasValidationDlqDuplicate) {
-          const queryHashForDLQ = crypto.createHash('sha256').update(query).digest('hex');
           await addToDLQ(
             this.redis,
             apiPrefix,
             jobId,
             validationResult.error.error,
-            queryHashForDLQ,
-          );
+            query, // plaintext - will be encrypted in addToDLQ
+          )
         }
 
-        throw new Error(`Validation failed: ${validationResult.error.error}`);
+        throw new Error(`Validation failed: ${validationResult.error.error}`)
       }
 
       // 5. Process job using extracted method
-      await this.processJob(jobId, query, clientId, apiPrefix);
+      await this.processJob(jobId, query, clientId, apiPrefix)
 
-      this.logger.debug(`${apiPrefix} job ${jobId} processed successfully`);
-      return { success: true };
-
+      this.logger.debug(`${apiPrefix} job ${jobId} processed successfully`)
+      return { success: true }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
       this.logger.error(
         `${apiPrefix} job ${jobId} failed (query hash: ${queryHash}): ${errorMessage}`,
         jobId,
-      );
+      )
 
-      // For unhandled errors, add to DLQ with hash
-      const queryHashForDLQ = crypto.createHash('sha256').update(query).digest('hex');
+      // For unhandled errors, add to DLQ with encrypted query
       await addToDLQ(
         this.redis,
         apiPrefix,
         jobId,
         errorMessage,
-        queryHashForDLQ,
-      );
+        query, // plaintext - will be encrypted in addToDLQ
+      )
 
       // Publish error response
-      const responseKey = getStreamName(apiPrefix, 'responses');
+      const responseKey = getStreamName(apiPrefix, 'responses')
       const errorResponse = JSON.stringify({
         type: 'error',
         jobId,
         error: errorMessage,
         timestamp: Date.now(),
-      });
+      })
 
-      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
-      return { success: false, error: errorMessage };
-
+      await this.redis.xadd(
+        responseKey,
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        errorResponse,
+      )
+      return { success: false, error: errorMessage }
     } finally {
       // Always release the query lock
-      await this.releaseLock(lockKey, jobId);
+      await this.releaseLock(lockKey, jobId)
     }
   }
 

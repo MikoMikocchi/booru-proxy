@@ -5,6 +5,8 @@ import {
   DLQ_STREAM,
   MAX_DLQ_RETRIES,
 } from '../../constants'
+import { encrypt, decrypt } from '../../crypto/crypto.util'
+import * as crypto from 'crypto'
 
 /**
  * ENHANCED DEDUPLICATION STRATEGY
@@ -48,9 +50,18 @@ export async function addToDLQ(
   apiName: string,
   jobId: string,
   errorMessage: string,
-  query: string,
+  plaintextQuery: string,
   retryCount = 0,
+  encryptionKey?: string,
 ): Promise<void> {
+  const encryptionKeyFinal = encryptionKey || process.env.ENCRYPTION_KEY;
+  if (!encryptionKeyFinal) {
+    throw new Error('ENCRYPTION_KEY is required for DLQ encryption');
+  }
+
+  const encryptedQuery = encrypt(plaintextQuery, encryptionKeyFinal);
+  const queryHash = crypto.createHash('sha256').update(plaintextQuery).digest('hex');
+
   const dlqStream = `${apiName}-dlq`
   await redis.xadd(
     dlqStream,
@@ -59,8 +70,10 @@ export async function addToDLQ(
     jobId,
     'error',
     errorMessage,
-    'query',
-    query,
+    'encryptedQuery',
+    encryptedQuery,
+    'queryHash',
+    queryHash,
     'retryCount',
     retryCount.toString(),
     'apiName',
@@ -73,9 +86,13 @@ export async function addToDLQ(
 export async function dedupCheck(
   redis: Redis,
   apiName: string,
-  query: string,
+  plaintextQuery: string,
   jobId: string,
+  encryptionKey?: string,
 ): Promise<boolean> {
+  const encryptionKeyFinal = encryptionKey || process.env.ENCRYPTION_KEY;
+  const queryHash = crypto.createHash('sha256').update(plaintextQuery).digest('hex');
+
   const dlqStream = `${apiName}-dlq`
   const windowMs = DLQ_DEDUP_WINDOW_SECONDS * 1000
   const now = Date.now()
@@ -94,7 +111,7 @@ export async function dedupCheck(
     // Set job dedup marker with TTL for cross-job protection (same window as DLQ check)
     await redis.setex(jobDedupKey, DLQ_DEDUP_WINDOW_SECONDS, '1')
 
-    // 2. DLQ query duplicate check using precise XRANGE instead of XREAD+COUNT
+    // 2. DLQ query duplicate check using hash comparison
     const entries = await redis.xrange(dlqStream, startId, endId, 'COUNT', 100)
 
     if (!entries || !entries.length) {
@@ -102,10 +119,10 @@ export async function dedupCheck(
     }
 
     for (const [, fields] of entries) {
-      const entryQuery = fields.find(f => f[0] === 'query')?.[1]
-      if (entryQuery === query) {
-        console.log(`DLQ query duplicate found: ${query.substring(0, 20)}... within window`)
-        return true // Duplicate query found in recent DLQ
+      const entryQueryHash = fields.find(f => f[0] === 'queryHash')?.[1]
+      if (entryQueryHash === queryHash) {
+        console.log(`DLQ query hash duplicate found: ${queryHash.slice(0, 16)}... within window`)
+        return true // Duplicate query hash found in recent DLQ
       }
     }
 
@@ -121,9 +138,18 @@ export async function moveToDeadQueue(
   apiName: string,
   jobId: string,
   errorMessage: string,
-  query: string,
+  plaintextQuery: string,
   finalError?: string,
+  encryptionKey?: string,
 ): Promise<void> {
+  const encryptionKeyFinal = encryptionKey || process.env.ENCRYPTION_KEY;
+  if (!encryptionKeyFinal) {
+    throw new Error('ENCRYPTION_KEY is required for Dead Queue encryption');
+  }
+
+  const encryptedQuery = encrypt(plaintextQuery, encryptionKeyFinal);
+  const queryHash = crypto.createHash('sha256').update(plaintextQuery).digest('hex');
+
   const deadQueueStream = `${apiName}-dead`
   await redis.xadd(
     deadQueueStream,
@@ -132,8 +158,10 @@ export async function moveToDeadQueue(
     jobId,
     'error',
     errorMessage,
-    'query',
-    query,
+    'encryptedQuery',
+    encryptedQuery,
+    'queryHash',
+    queryHash,
     'finalError',
     finalError || 'Max retries exceeded',
     'timestamp',
@@ -147,17 +175,23 @@ export async function retryFromDLQ(
   redis: Redis,
   apiName: string,
   jobId: string,
-  query: string,
+  plaintextQuery: string,
   retryCount: number,
   streamId: string,
+  encryptionKey?: string,
 ): Promise<{ success: boolean; error?: string }> {
+  const encryptionKeyFinal = encryptionKey || process.env.ENCRYPTION_KEY;
+  if (!encryptionKeyFinal) {
+    return { success: false, error: 'ENCRYPTION_KEY is required for retry' }
+  }
+
   if (retryCount >= MAX_DLQ_RETRIES) {
     return { success: false, error: 'Max retries exceeded' }
   }
 
   const dlqStream = `${apiName}-dlq`
   try {
-    // Get apiName from the DLQ entry
+    // Get DLQ entry to extract metadata
     const entry = await redis.xrange(dlqStream, streamId, streamId, 'COUNT', 1)
     if (!entry || !entry.length) {
       return { success: false, error: 'DLQ entry not found' }
@@ -165,25 +199,51 @@ export async function retryFromDLQ(
 
     const [, fields] = entry[0]
     const entryApiName = fields.find(f => f[0] === 'apiName')?.[1] || apiName
+    const storedEncryptedQuery = fields.find(f => f[0] === 'encryptedQuery')?.[1]
+    const storedQueryHash = fields.find(f => f[0] === 'queryHash')?.[1]
 
-    // Enhanced dedup check before retrying (include jobId for cross-job protection)
-    const isDuplicate = await dedupCheck(redis, entryApiName, query, jobId)
+    if (!storedEncryptedQuery) {
+      return { success: false, error: 'No encrypted query found in DLQ entry' }
+    }
+
+    // Decrypt the query from DLQ
+    let decryptedQuery: string;
+    try {
+      decryptedQuery = decrypt(storedEncryptedQuery, encryptionKeyFinal);
+    } catch (decryptError) {
+      console.error(`Failed to decrypt DLQ entry for job ${jobId}: ${decryptError.message}`);
+      return { success: false, error: 'Failed to decrypt DLQ entry' };
+    }
+
+    // Verify query integrity via hash (optional security check)
+    const decryptedHash = crypto.createHash('sha256').update(decryptedQuery).digest('hex');
+    if (storedQueryHash !== decryptedHash) {
+      console.error(`Query hash mismatch in DLQ retry for job ${jobId}`);
+      return { success: false, error: 'Query integrity check failed' };
+    }
+
+    // Use decrypted query for deduplication check
+    const isDuplicate = await dedupCheck(redis, entryApiName, decryptedQuery, jobId, encryptionKeyFinal)
     if (isDuplicate) {
       console.log(`Skipping retry for duplicate job ${jobId}`)
       return { success: false, error: 'Duplicate job detected during retry' }
     }
 
-    // Reconstruct original message for REQUESTS_STREAM with backoff
+    // Reconstruct original message for REQUESTS_STREAM with backoff (encrypt query)
     const newRetryCount = retryCount + 1
     const backoffDelay = Math.min(1000 * Math.pow(2, newRetryCount), 60000)
+    const encryptedQueryForStream = encrypt(decryptedQuery, encryptionKeyFinal)
+    const queryHashForStream = crypto.createHash('sha256').update(decryptedQuery).digest('hex')
 
     await redis.xadd(
       REQUESTS_STREAM,
       '*',
       'jobId',
       jobId,
-      'query',
-      query,
+      'encryptedQuery',
+      encryptedQueryForStream,
+      'queryHash',
+      queryHashForStream,
       'apiName',
       entryApiName,
       'retryCount',
