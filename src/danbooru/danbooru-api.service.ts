@@ -45,31 +45,53 @@ export class DanbooruApiService extends BaseApiService {
   protected sanitizeResponse(data: any): any {
     const sanitized = super.sanitizeResponse(data)
 
-    // Additional Danbooru-specific tag sanitization using xss library
-    if (sanitized.tag_string_general) {
-      sanitized.tag_string_general = this.sanitizeTags(
-        sanitized.tag_string_general,
-      )
-    }
-    if (sanitized.tag_string_copyright) {
-      sanitized.tag_string_copyright = this.sanitizeTags(
-        sanitized.tag_string_copyright,
-      )
-    }
+    // Comprehensive Danbooru-specific sanitization using xss library
+    // Sanitize all potential string fields that could contain user-generated content
+    const stringFields = [
+      'tag_string_general',
+      'tag_string_artist',
+      'tag_string_copyright',
+      'tag_string_character',
+      'source',
+      'description',
+      'commentary_title',
+      'commentary_desc',
+      'file_url',
+      'large_file_url',
+      'preview_file_url',
+      'sample_file_url',
+      'pixiv_id',
+      'last_comment_at',
+      'created_at',
+      'updated_at',
+      'pixiv_artist_id',
+      'uploader_id',
+      'score',
+      'fav_count',
+      'comment_count',
+      'updater_id',
+    ];
 
-    return sanitized
+    stringFields.forEach(field => {
+      if (sanitized[field] && typeof sanitized[field] === 'string') {
+        sanitized[field] = this.sanitizeStringField(sanitized[field]);
+      }
+    });
+
+    return sanitized;
   }
 
-  private sanitizeTags(tags: string): string {
-    if (!tags) return ''
-    // Strict sanitization: strip all HTML/JS tags to prevent XSS in user-generated Danbooru tags
-    // Use empty whiteList to remove all tags, escape attributes, and strip dangerous elements
-    return xss(tags, {
-      whiteList: {}, // No allowed tags - full stripping
-      escapeHtml, // Escape HTML entities using xss's escapeHtml function
+  private sanitizeStringField(str: string): string {
+    if (!str) return '';
+
+    // Use xss library for comprehensive sanitization
+    // Empty whitelist strips all tags, escapeHtml prevents attribute injection
+    return xss(str, {
+      whiteList: {}, // No allowed tags - complete stripping
+      escapeHtml, // Escape HTML entities
       stripIgnoreTag: true,
-      stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed'],
-    })
+      stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'img'],
+    });
   }
 
   async fetchPosts(
