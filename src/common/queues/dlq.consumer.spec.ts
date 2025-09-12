@@ -159,14 +159,28 @@ describe('DlqConsumer', () => {
         .spyOn(consumer as any, 'processDLQ')
         .mockResolvedValue(undefined)
 
-      jest.useFakeTimers()
+      // Mock setInterval to control timing
+      const mockSetInterval = jest.spyOn(global, 'setInterval').mockImplementation(
+        (fn: () => void, delay: number) => {
+          // Run the first call immediately
+          fn()
+          // Return a fake interval ID
+          return 1 as any
+        }
+      )
 
       const processingPromise = consumer['startProcessing']()
-      jest.advanceTimersByTime(2000)
+
+      // Run one more cycle
+      jest.useFakeTimers()
+      jest.advanceTimersByTime(1000)
       jest.runAllTimers()
       jest.useRealTimers()
 
       expect(processDLQSpy).toHaveBeenCalledTimes(2)
+
+      mockSetInterval.mockRestore()
+      jest.clearAllTimers()
 
       await processingPromise.catch(() => {})
     }, 5000)

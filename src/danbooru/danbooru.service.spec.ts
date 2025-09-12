@@ -39,6 +39,7 @@ interface MockDanbooruApiService {
 interface MockCacheService {
   getCachedResponse: jest.MockedFunction<any>
   setCache: jest.MockedFunction<any>
+  invalidateCache: jest.MockedFunction<any>
 }
 
 interface MockRateLimitManager {
@@ -61,6 +62,7 @@ describe('DanbooruService', () => {
     mockCacheService = {
       getCachedResponse: jest.fn(),
       setCache: jest.fn(),
+      invalidateCache: jest.fn().mockResolvedValue(0),
     }
 
     mockRateLimitManager = {
@@ -165,39 +167,46 @@ describe('DanbooruService', () => {
         clientId,
       )
 
-      // Verify cache miss
+      // Verify cache miss - service uses random=true (default)
       expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
         'danbooru',
         query,
-        false,
+        true,
+        1,
+        ['cat'],
       )
 
-      // Verify API call
-      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(query, 1, false)
+      // Verify API call with random=true (default)
+      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(query, 1, true)
 
-      // Verify response published
+      // Verify response published with timestamp
       expect(mockRedis.xadd).toHaveBeenCalledWith(
         'danbooru:responses',
         '*',
         'jobId',
         jobId,
         'data',
-        expect.stringContaining(JSON.stringify(result)),
+        expect.any(String), // JSON string with result + timestamp
       )
 
-      // Verify cache set
+      // Verify cache set with full signature and random=true
       expect(mockCacheService.setCache).toHaveBeenCalledWith(
         'danbooru',
         query,
         result,
-        false,
+        true,
+        1,
+        ['cat'],
       )
+
+      // Verify cache invalidation for random queries
+      expect(mockCacheService.invalidateCache).toHaveBeenCalledTimes(2)
 
       // Verify lock released
       expect(mockRedis.del).toHaveBeenCalledWith(lockKey)
     })
 
-    it('should return cached response when cache hit (random=false)', async () => {
+    it('should return cached response when cache hit (random=true)', async () => {
       const cachedResponse = {
         type: 'success' as const,
         jobId: 'cached-job',
@@ -215,18 +224,19 @@ describe('DanbooruService', () => {
       } as any)
 
       // Mock cache hit
-      mockConfigService.get.mockReturnValueOnce(false) // DANBOORU_RANDOM = false
       mockCacheService.getCachedResponse.mockResolvedValue(cachedResponse)
 
       const result = await service.processRequest(jobId, query, clientId)
 
       expect(result).toEqual(cachedResponse)
 
-      // Verify cache hit
+      // Verify cache hit with service default random=true
       expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
         'danbooru',
         query,
-        false,
+        true,
+        1,
+        ['cat'],
       )
 
       // Should not call API
