@@ -357,7 +357,3 @@ Run `npm run lint` and `npm run test` before submitting. Follow NestJS style; ad
 ## License
 
 MIT License - see [`LICENSE`](LICENSE) for details.
-
-## Contact
-
-Open a GitHub issue for support. Maintainer: [your-contact].
