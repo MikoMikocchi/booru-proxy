@@ -20,8 +20,9 @@ import {
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from './cache.service'
-import { RateLimiterService } from './rate-limiter.service'
+import { RateLimitManagerService } from './rate-limit-manager.service'
 import { RedisStreamConsumer } from './redis-stream.consumer'
+import { CacheManagerService } from './cache-manager.service'
 import Redis from 'ioredis'
 
 @Injectable()
@@ -33,8 +34,9 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     private readonly danbooruApiService: DanbooruApiService,
     private readonly cacheService: CacheService,
-    private readonly rateLimiterService: RateLimiterService,
+    private readonly rateLimitManagerService: RateLimitManagerService,
     private readonly redisStreamConsumer: RedisStreamConsumer,
+    private readonly cacheManagerService: CacheManagerService,
   ) {}
 
   async onModuleInit() {
@@ -55,29 +57,39 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     try {
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
 
-      const isAllowed = await this.checkRateLimit(jobId, clientId)
-      if (!isAllowed) {
-        const errorData: DanbooruErrorResponse = {
+      // Use extracted DTO from validation (but since processRequest doesn't have jobData, adjust to use parameters and call validation separately if needed)
+      // For now, assume validation done in consumer, here start from rate limit
+      const rateCheck = await this.rateLimitManagerService.checkRateLimit(jobId, clientId)
+      if (!rateCheck.allowed) {
+        await this.publishResponse(jobId, rateCheck.error)
+        return rateCheck.error
+      }
+
+      const responseOrNull = await this.cacheManagerService.getCachedOrFetch(query, random, jobId)
+      if (responseOrNull) {
+        await this.publishResponse(jobId, responseOrNull)
+        return responseOrNull
+      }
+
+      const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
+      const post = await this.danbooruApiService.fetchPosts(query, limit, random)
+      if (!post) {
+        const errorMessage = 'No posts found for the query or API error'
+        const error: DanbooruErrorResponse = {
           type: 'error',
           jobId,
-          error: 'Rate limit exceeded. Try again in 1 minute.',
+          error: errorMessage,
         }
-        await this.publishResponse(jobId, errorData)
-        return errorData
+        await this.publishResponse(jobId, error)
+        await addToDLQ(this.redis, jobId, errorMessage, query)
+        return error
       }
 
-      const responseOrNull = await this.getCachedOrFetch(query, random, jobId)
-      if (!responseOrNull) {
-        const errorMessage = 'No posts found for the query or API error'
-        return await this.handleApiError(errorMessage, jobId, query)
-      }
-
-      const responseData = responseOrNull
+      const responseData = this.buildSuccessResponse(post, jobId)
       await this.publishResponse(jobId, responseData)
-      // Cache the response for 1h if not random
-      if (!random) {
-        await this.cacheService.setCache(query, responseData, random)
-      }
+
+      await this.cacheManagerService.cacheResponseIfNeeded(query, responseData, random)
+
       return responseData
     } catch (error: unknown) {
       return await this.handleProcessingError(error, jobId, query)
@@ -98,52 +110,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
   }
 
-  private async checkRateLimit(
-    jobId: string,
-    clientId?: string,
-  ): Promise<boolean> {
-    const rateLimitPerMinute =
-      this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
-    const rateKey = clientId
-      ? `rate:danbooru:${clientId}`
-      : `rate:danbooru:global`
-    const isAllowed = await this.rateLimiterService.checkRateLimit(
-      rateKey,
-      rateLimitPerMinute,
-      60, // 1 minute window
-    )
-    if (!isAllowed) {
-      this.logger.warn(
-        `Rate limit exceeded for job ${jobId} (client: ${clientId || 'global'})`,
-        jobId,
-      )
-    }
-    return isAllowed
-  }
+  // Private methods like checkRateLimit, getCachedOrFetch removed - now handled by manager services
 
-  private async getCachedOrFetch(
-    query: string,
-    random: boolean,
-    jobId: string,
-  ): Promise<DanbooruSuccessResponse | null> {
-    // Skip cache for random queries
-    let cached: DanbooruSuccessResponse | null = null
-    if (!random) {
-      cached = await this.cacheService.getCachedResponse(query, random)
-      if (cached) {
-        this.logger.log(`Cache hit for job ${jobId}`, jobId)
-        return cached
-      }
-    }
-
-    const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
-    const post = await this.danbooruApiService.fetchPosts(query, limit, random)
-    if (!post) {
-      return null
-    }
-
-    return this.buildSuccessResponse(post, jobId)
-  }
 
   private buildSuccessResponse(
     post: DanbooruPost,
