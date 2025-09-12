@@ -1,7 +1,7 @@
 import { Module, Global } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import Redis from 'ioredis'
-import { parseRedisUrl } from '../utils/redis.util'
+import { parseRedisUrl } from '../shared.module'
 
 @Global()
 @Module({

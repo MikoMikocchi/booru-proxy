@@ -4,7 +4,7 @@ import { Queue } from 'bullmq'
 import { Job } from 'bullmq'
 import Redis from 'ioredis'
 import { MAX_DLQ_RETRIES } from '../../common/constants'
-import { moveToDeadQueue } from './dlq.util'
+import { moveToDeadQueue } from './utils/dlq.util'
 
 @Processor('danbooru-dlq', { concurrency: 3 })
 @Injectable()

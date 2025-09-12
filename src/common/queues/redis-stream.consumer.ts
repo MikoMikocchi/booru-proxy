@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject } from '@nestjs/common'
+import { Injectable, Logger, Inject, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
 import { Processor } from '@nestjs/bullmq'
 import { Job } from 'bullmq'
 import Redis from 'ioredis'
@@ -7,12 +7,12 @@ import { validate } from 'class-validator'
 import { CreateRequestDto } from '../../danbooru/dto/create-request.dto'
 import { DanbooruService } from '../../danbooru/danbooru.service'
 import { ValidationService } from '../../danbooru/validation.service'
-import { addToDLQ } from './dlq.util'
+import { addToDLQ } from './utils/dlq.util'
 import { DEDUP_TTL_SECONDS } from '../../common/constants'
 
 @Processor('danbooru-requests', { concurrency: 5 })
 @Injectable()
-export class RedisStreamConsumer {
+export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisStreamConsumer.name)
 
   constructor(
@@ -20,6 +20,14 @@ export class RedisStreamConsumer {
     private readonly validationService: ValidationService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {}
+
+  async onModuleInit() {
+    // Initialization logic if needed
+  }
+
+  async onModuleDestroy() {
+    // Cleanup logic if needed
+  }
 
   async process(job: Job<{ jobId: string; query: string; clientId: string }>) {
     const data = job.data

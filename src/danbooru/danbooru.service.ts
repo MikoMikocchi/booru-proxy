@@ -12,7 +12,7 @@ import {
   DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
 import { DanbooruPost } from './dto/danbooru-post.class'
-import { addToDLQ } from './utils/dlq.util'
+import { addToDLQ } from '../common/queues/utils/dlq.util'
 import {
   REQUESTS_STREAM,
   RESPONSES_STREAM,
@@ -21,7 +21,7 @@ import {
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from './cache.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
-import { RedisStreamConsumer } from './redis-stream.consumer'
+import { RedisStreamConsumer } from '../common/queues/redis-stream.consumer'
 import { CacheManagerService } from './cache-manager.service'
 import Redis from 'ioredis'
 
@@ -96,7 +96,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
           error: errorMessage,
         }
         await this.publishResponse(jobId, error)
-        await addToDLQ(this.redis, jobId, errorMessage, query)
+        await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
         return error
       }
 
@@ -163,7 +163,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       error: errorMessage,
     }
     await this.publishResponse(jobId, errorData)
-    await addToDLQ(this.redis, jobId, errorMessage, query)
+    await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
     return errorData
   }
 
@@ -180,7 +180,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       error: errorMessage,
     }
     await this.publishResponse(jobId, errorData)
-    await addToDLQ(this.redis, jobId, errorMessage, query)
+    await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
     return errorData
   }
 }

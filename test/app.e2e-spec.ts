@@ -16,8 +16,6 @@ import { MAX_DLQ_RETRIES } from '../src/common/constants'
 import { DanbooruApiService } from '../src/danbooru/danbooru-api.service'
 import { CacheService } from '../src/danbooru/cache.service'
 import { RateLimiterService } from '../src/common/rate-limit/rate-limiter.service'
-import { RedisStreamConsumer } from '../src/danbooru/redis-stream.consumer'
-import { DlqConsumer } from '../src/danbooru/dlq.consumer'
 import {
   REQUESTS_STREAM,
   RESPONSES_STREAM,
