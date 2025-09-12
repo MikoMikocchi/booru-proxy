@@ -20,7 +20,7 @@ import {
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from './cache.service'
-import { RateLimitManagerService } from './rate-limit-manager.service'
+import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
 import { RedisStreamConsumer } from './redis-stream.consumer'
 import { CacheManagerService } from './cache-manager.service'
 import Redis from 'ioredis'
@@ -63,6 +63,7 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       // Use extracted DTO from validation (but since processRequest doesn't have jobData, adjust to use parameters and call validation separately if needed)
       // For now, assume validation done in consumer, here start from rate limit
       const rateCheck = await this.rateLimitManagerService.checkRateLimit(
+        'danbooru',
         jobId,
         clientId,
       )
