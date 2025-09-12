@@ -14,6 +14,7 @@ import {
   DANBOORU_RANDOM_PATTERN,
   DANBOORU_ALL_PATTERN,
 } from '../constants'
+import type { ICacheBackend } from './interfaces/icache-backend.interface'
 
 export interface CacheableResponse {
   [key: string]: any
@@ -23,34 +24,12 @@ export interface CacheableResponse {
 export class CacheService {
   private readonly logger = new Logger(CacheService.name)
   private readonly ttl: number
-  private backend: string
-  private redis?: any
-  private memcached?: any
 
   constructor(
-    @Inject('REDIS_CLIENT') private readonly injectedRedis: any,
+    @Inject('CACHE_BACKEND') private readonly backend: ICacheBackend,
     private configService: ConfigService,
   ) {
     this.ttl = this.configService.get<number>('CACHE_TTL_SECONDS') || 3600
-    this.backend = this.configService.get<string>('CACHE_BACKEND') || 'redis'
-    this.initializeBackend()
-  }
-
-  private initializeBackend() {
-    if (this.backend === 'redis') {
-      this.redis = this.injectedRedis
-    } else if (this.backend === 'memcached') {
-      const memjs = require('memjs')
-      const servers =
-        this.configService.get<string>('MEMCACHED_SERVERS') || '127.0.0.1:11211'
-      this.memcached = memjs.Client.create(servers)
-    } else {
-      this.logger.warn(
-        `Unsupported cache backend: ${this.backend}. Using Redis fallback.`,
-      )
-      this.backend = 'redis'
-      this.redis = this.injectedRedis
-    }
   }
 
   async getCachedResponse<T extends CacheableResponse>(
@@ -235,40 +214,10 @@ export class CacheService {
    * @returns Number of deleted keys
    */
   async invalidateCache(keyPattern: string): Promise<number> {
-    if (this.backend === 'memcached') {
-      this.logger.warn(
-        `Pattern-based invalidation not supported for Memcached. Implement tag-based if needed.`,
-      )
-      return 0
-    }
-
     try {
-      // Use SCAN for production (KEYS blocks on large datasets)
-      // For now, use KEYS for simplicity - consider SCAN implementation later
-      const keys = await this.redis.keys(keyPattern)
-      let deletedCount = 0
-
-      if (keys.length === 0) {
-        this.logger.debug(`No cache keys matched pattern: ${keyPattern}`)
-        return 0
-      }
-
-      // Batch delete for efficiency (Redis pipeline)
-      const pipeline = this.redis.pipeline()
-      for (const key of keys) {
-        pipeline.del(key)
-      }
-
-      const results = await pipeline.exec()
-      deletedCount = results.filter(
-        (result: [string, number]) => result[1] === 1,
-      ).length
-
-      this.logger.log(
-        `Invalidated ${deletedCount} cache keys matching pattern: ${keyPattern}`,
-      )
-
-      return deletedCount
+      // Delegate to backend, passing pattern for Redis-specific pattern matching
+      // Memcached backend will return 0 as per its limitation
+      return await this.backend.invalidate(keyPattern)
     } catch (error) {
       this.logger.error(
         `Failed to invalidate cache with pattern ${keyPattern}: ${error.message}`,
@@ -283,47 +232,51 @@ export class CacheService {
     return await this.invalidateCache(pattern)
   }
 
-  // Backend-specific operations
+  // Delegate to backend with error handling and JSON serialization
   private async get(key: string): Promise<string | null> {
-    if (this.backend === 'redis') {
-      return await this.redis.get(key)
-    } else if (this.backend === 'memcached') {
-      try {
-        const value = await this.memcached.get(key)
-        return value ? value.toString() : null
-      } catch (error) {
-        this.logger.error(`Memcached get error: ${error.message}`)
-        return null
-      }
+    try {
+      const data = await this.backend.get(key)
+      return data ? JSON.stringify(data) : null
+    } catch (error) {
+      this.logger.error(`Cache backend get error for key ${key}: ${error.message}`)
+      throw error
     }
-    return null
   }
 
-  private async setex(
-    key: string,
-    expiresIn: number,
-    value: string,
-  ): Promise<void> {
-    if (this.backend === 'redis') {
-      await this.redis.setex(key, expiresIn, value)
-    } else if (this.backend === 'memcached') {
-      try {
-        await this.memcached.set(key, value, { expires: expiresIn })
-      } catch (error) {
-        this.logger.error(`Memcached set error: ${error.message}`)
-      }
+  private async setex(key: string, expiresIn: number, value: string): Promise<void> {
+    try {
+      const parsedValue = typeof value === 'string' ? JSON.parse(value) : value
+      await this.backend.setex(key, expiresIn, parsedValue)
+    } catch (error) {
+      this.logger.error(`Cache backend setex error for key ${key}: ${error.message}`)
+      throw error
     }
   }
 
   private async del(key: string): Promise<void> {
-    if (this.backend === 'redis') {
-      await this.redis.del(key)
-    } else if (this.backend === 'memcached') {
-      try {
-        await this.memcached.delete(key)
-      } catch (error) {
-        this.logger.error(`Memcached delete error: ${error.message}`)
-      }
+    try {
+      await this.backend.del(key)
+    } catch (error) {
+      this.logger.error(`Cache backend del error for key ${key}: ${error.message}`)
+      throw error
+    }
+  }
+
+  async invalidate(pattern?: string): Promise<number> {
+    try {
+      return await this.backend.invalidate(pattern)
+    } catch (error) {
+      this.logger.error(`Cache backend invalidate error: ${error.message}`)
+      throw error
+    }
+  }
+
+  async getStats(): Promise<any> {
+    try {
+      return await this.backend.getStats()
+    } catch (error) {
+      this.logger.error(`Cache backend stats error: ${error.message}`)
+      return {}
     }
   }
 

@@ -30,3 +30,13 @@ export const DANBOORU_POSTS_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${
 export const DANBOORU_TAG_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${POSTS_RESOURCE}:*:${TAG_SUFFIX}:*`
 export const DANBOORU_RANDOM_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${POSTS_RESOURCE}:*:${RANDOM_SUFFIX}:*`
 export const DANBOORU_ALL_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:*`
+
+/**
+ * Generate stream names for API providers
+ * @param apiPrefix - API prefix (e.g., 'danbooru', 'gelbooru')
+ * @param type - Stream type (e.g., 'requests', 'responses', 'dlq')
+ * @returns Stream name in format: `${apiPrefix}:${type}`
+ */
+export function getStreamName(apiPrefix: string, type: string): string {
+  return `${apiPrefix}:${type}`;
+}

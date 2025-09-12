@@ -23,9 +23,23 @@ import { DlqConsumer } from './dlq.consumer'
       },
       inject: [ConfigService],
     }),
-    // Register main queue for request processing
-    BullModule.registerQueue({
-      name: 'danbooru-requests',
+  ],
+  providers: [RedisStreamConsumer, DlqConsumer],
+  exports: [BullModule, RedisStreamConsumer, DlqConsumer],
+})
+export class QueuesModule {
+  static forRootAsync() {
+    return {
+      module: QueuesModule,
+      global: true,
+      imports: [ConfigModule, RedisModule],
+      exports: [QueuesModule],
+    };
+  }
+
+  static registerApiQueues(apiPrefixes: string[]) {
+    const queueImports = apiPrefixes.map(prefix => BullModule.registerQueue({
+      name: `${prefix}-requests`,
       defaultJobOptions: {
         removeOnComplete: 10,
         removeOnFail: 5,
@@ -35,9 +49,12 @@ import { DlqConsumer } from './dlq.consumer'
           delay: 2000,
         },
       },
-    }),
-  ],
-  providers: [RedisStreamConsumer, DlqConsumer],
-  exports: [BullModule, RedisStreamConsumer, DlqConsumer],
-})
-export class QueuesModule {}
+    }));
+
+    return {
+      module: QueuesModule,
+      imports: queueImports,
+      exports: [BullModule],
+    };
+  }
+}

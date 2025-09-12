@@ -27,7 +27,7 @@ export class DanbooruApiService extends BaseApiService {
 
   protected getApiConfig(): ApiConfig {
     return {
-      baseURL: 'https://danbooru.donmai.us',
+      baseUrl: 'https://danbooru.donmai.us',
       timeout: API_TIMEOUT_MS,
       auth: {
         username: this.login,
