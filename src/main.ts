@@ -47,15 +47,21 @@ let app: any
 async function bootstrap() {
   try {
     const configService = new ConfigService()
-    let redisUrl = configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
+    const redisPassword = configService.get<string>('REDIS_PASSWORD')
+    const redisUrlRaw = configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
     const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
+    console.log('DEBUG: REDIS_PASSWORD=', redisPassword)
+    console.log('DEBUG: REDIS_URL raw=', redisUrlRaw)
+    console.log('DEBUG: REDIS_USE_TLS=', useTls)
 
+    let redisUrl = redisUrlRaw
     if (useTls) {
       const baseUrl = redisUrl.replace(/^redis:/, 'rediss:')
       const url = new URL(baseUrl)
-      const password = url.password || configService.get<string>('REDIS_PASSWORD') || ''
-      redisUrl = `rediss://${password}@${url.host}`
+      const password = url.password || redisPassword || ''
+      redisUrl = url.username ? `rediss://${password}@${url.host}` : `rediss://:${password}@${url.host}`
     }
+    console.log('DEBUG: Constructed REDIS_URL=', redisUrl)
 
     const url = new URL(redisUrl)
     let tlsConfig: any = undefined
@@ -84,19 +90,37 @@ async function bootstrap() {
             cert: [certContent],
             key: keyContent,
             rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
+            checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
           }
         } catch (error) {
           console.warn('Failed to load TLS certificates:', error.message)
           tlsConfig = {
-            rejectUnauthorized: false // Fallback for dev
+            rejectUnauthorized: false, // Fallback for dev
+            checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
           }
         }
       } else {
         tlsConfig = {
-          rejectUnauthorized: false // Fallback if paths not provided
+          rejectUnauthorized: false, // Fallback if paths not provided
+          checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
         }
       }
     }
+
+    // Create Redis client for shutdown using the same config
+    redisClient = new Redis({
+      host: url.hostname,
+      port: Number(url.port) || 6379,
+      password: url.password || undefined,
+      username: undefined,
+      tls: tlsConfig,
+      retryStrategy: (times: number) => {
+        if (times > 10) {
+          return null
+        }
+        return Math.min(times * 500, 3000)
+      },
+    })
 
     app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
       transport: Transport.REDIS,
@@ -104,7 +128,7 @@ async function bootstrap() {
         host: url.hostname,
         port: Number(url.port) || 6379,
         password: url.password || undefined,
-        username: url.username || undefined,
+        username: url.username ? url.username : undefined,
         tls: tlsConfig,
         retryStrategy: (times: number) => {
           if (times > 10) {
@@ -126,10 +150,6 @@ async function bootstrap() {
     }))
 
     await app.listen()
-
-    // Resolve Redis client via DI after listen() when container is fully initialized
-    const moduleRef = app.get(ModuleRef)
-    redisClient = moduleRef.get('REDIS_CLIENT')
 
     // Set up signal handlers after full initialization
     process.on('SIGINT', gracefulShutdown)

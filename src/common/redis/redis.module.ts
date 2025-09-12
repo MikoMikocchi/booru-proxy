@@ -19,7 +19,7 @@ import { LockUtil } from './utils/lock.util'
           const url = new URL(baseUrl)
           const password =
             url.password || configService.get<string>('REDIS_PASSWORD') || ''
-          redisUrl = `rediss://${password}@${url.host}`
+          redisUrl = url.username ? `rediss://${password}@${url.host}` : `rediss://:${password}@${url.host}`
         }
 
         const url = new URL(redisUrl)
@@ -49,16 +49,19 @@ import { LockUtil } from './utils/lock.util'
                 cert: [certContent],
                 key: keyContent,
                 rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
+                checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
               }
             } catch (error) {
               console.warn('Failed to load TLS certificates:', error.message)
               tlsConfig = {
-                rejectUnauthorized: false // Fallback for dev
+                rejectUnauthorized: false, // Fallback for dev
+                checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
               }
             }
           } else {
             tlsConfig = {
-              rejectUnauthorized: false // Fallback if paths not provided
+              rejectUnauthorized: false, // Fallback if paths not provided
+              checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
             }
           }
         }
@@ -66,7 +69,7 @@ import { LockUtil } from './utils/lock.util'
         const redisClient = new Redis({
           host: url.hostname,
           port: Number(url.port) || (useTls ? 6380 : 6379),
-          username: url.username || undefined,
+          username: url.username ? url.username : undefined,
           password: url.password || undefined,
           tls: tlsConfig,
           retryStrategy: (times: number) => {

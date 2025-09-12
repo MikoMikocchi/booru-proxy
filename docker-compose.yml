@@ -1,24 +1,14 @@
 services:
   redis:
     image: redis:alpine
-    command: >
-      redis-server
-      --tls-port 6380
-      --port 0
-      --appendonly yes
-      --requirepass "$(cat /run/secrets/redis_password)"
-      --tls-cert-file /certs/redis/redis-server.crt
-      --tls-key-file /certs/redis/redis-server.key
-      --tls-ca-cert-file /certs/redis/ca.crt
-      --tls-auth-clients no
-      --tls-protocols "TLSv1.2 TLSv1.3"
+    command: sh -c 'redis-server --tls-port 6380 --port 0 --appendonly yes --requirepass "$$(cat /run/secrets/redis_password)" --tls-cert-file /certs/redis/redis-server.crt --tls-key-file /certs/redis/redis-server.key --tls-ca-cert-file /certs/redis/ca.crt --tls-auth-clients no --tls-protocols "TLSv1.2 TLSv1.3"'
     volumes:
       - redis_data:/data
       - ./certs/redis:/certs/redis:ro
     secrets:
       - redis_password
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -h localhost -p 6380 --tls --cacert /certs/redis/ca.crt -a \"$(cat /run/secrets/redis_password)\" ping || exit 1"]
+      test: ["CMD-SHELL", "redis-cli -h localhost -p 6380 --tls --cacert /certs/redis/ca.crt -a \"$$(cat /run/secrets/redis_password)\" ping || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,16 +16,17 @@ services:
 
   danbooru-worker:
     build: .
+    command: >
+      sh -c "export REDIS_PASSWORD=$$(cat /run/secrets/redis_password) && npm run start:prod"
     depends_on:
       redis:
         condition: service_healthy
     environment:
       - REDIS_USE_TLS=true
-      - REDIS_URL=rediss://${REDIS_PASSWORD}@redis:6380
+      - REDIS_URL=rediss://:@redis:6380
       - REDIS_TLS_CA=/certs/redis/ca.crt
       - REDIS_TLS_CERT=/certs/redis/redis-client.crt
       - REDIS_TLS_KEY=/certs/redis/redis-client.key
-      - REDIS_PASSWORD=$(cat /run/secrets/redis_password)
       - DANBOORU_LOGIN=${DANBOORU_LOGIN}
       - DANBOORU_API_KEY=${DANBOORU_API_KEY}
       - RATE_LIMIT_PER_MINUTE=60

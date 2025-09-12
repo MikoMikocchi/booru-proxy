@@ -13,8 +13,20 @@ import { DlqConsumer } from './dlq.consumer'
     BullModule.forRootAsync({
       imports: [ConfigModule, RedisModule],
       useFactory: async (configService: ConfigService) => {
-        const redisUrl =
+        let redisUrl =
           configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
+        const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
+        const password = configService.get<string>('REDIS_PASSWORD') || ''
+
+        if (useTls) {
+          const baseUrl = redisUrl.replace(/^redis:/, 'rediss:')
+          const url = new URL(baseUrl)
+          redisUrl = `rediss://:${password}@${url.host}`
+        } else {
+          const url = new URL(redisUrl)
+          redisUrl = `redis://${url.username || ''}:${password}@${url.host}`
+        }
+
         return {
           connection: {
             url: redisUrl,
