@@ -1,7 +1,6 @@
 import { Module, Global } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import Redis from 'ioredis'
-import { parseRedisUrl } from '../shared.module'
 
 @Global()
 @Module({
@@ -10,27 +9,51 @@ import { parseRedisUrl } from '../shared.module'
     {
       provide: 'REDIS_CLIENT',
       useFactory: (configService: ConfigService) => {
-        const redisUrl =
+        let redisUrl =
           configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
-        const parsedUrl = parseRedisUrl(redisUrl)
+        const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
+
+        if (useTls) {
+          const baseUrl = redisUrl.replace(/^redis:/, 'rediss:')
+          const url = new URL(baseUrl)
+          const password =
+            url.password || configService.get<string>('REDIS_PASSWORD') || ''
+          redisUrl = `rediss://${password}@${url.host}`
+        }
+
+        const url = new URL(redisUrl)
+        let tlsConfig: any = undefined
+        if (useTls) {
+          const ca = configService.get<string>('REDIS_TLS_CA')
+          const cert = configService.get<string>('REDIS_TLS_CERT')
+          const key = configService.get<string>('REDIS_TLS_KEY')
+          if (ca && cert && key) {
+            tlsConfig = {
+              ca: ca,
+              cert: cert,
+              key: key,
+            }
+          }
+        }
+
         const redisClient = new Redis({
-          host: parsedUrl.hostname,
-          port: Number(parsedUrl.port) || 6379,
-          username: parsedUrl.username || undefined,
-          password: parsedUrl.password || undefined,
-          tls: parsedUrl.protocol === 'rediss:' ? {} : undefined,
+          host: url.hostname,
+          port: Number(url.port) || 6379,
+          username: url.username || undefined,
+          password: url.password || undefined,
+          tls: tlsConfig,
           retryStrategy: (times: number) => {
             if (times > 10) {
-              return null // Stop retrying after 10 attempts
+              return null
             }
-            return Math.min(times * 100, 2000) // Exponential backoff, max 2s
+            return Math.min(times * 500, 3000) // Progressive backoff up to 3s
           },
           reconnectOnError: (err: Error) => {
             const targetError = 'READONLY'
             if (err.message.includes(targetError)) {
               return 1 // Reconnect after 1s
             }
-            return 1 // Reconnect always
+            return 2 // Reconnect after 2s for other errors
           },
         })
 

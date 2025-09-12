@@ -47,9 +47,30 @@ let app: any
 async function bootstrap() {
   try {
     const configService = new ConfigService()
-    const redisUrl =
-      configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
+    let redisUrl = configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
+    const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
+
+    if (useTls) {
+      const baseUrl = redisUrl.replace(/^redis:/, 'rediss:')
+      const url = new URL(baseUrl)
+      const password = url.password || configService.get<string>('REDIS_PASSWORD') || ''
+      redisUrl = `rediss://${password}@${url.host}`
+    }
+
     const url = new URL(redisUrl)
+    let tlsConfig: any = undefined
+    if (useTls) {
+      const ca = configService.get<string>('REDIS_TLS_CA')
+      const cert = configService.get<string>('REDIS_TLS_CERT')
+      const key = configService.get<string>('REDIS_TLS_KEY')
+      if (ca && cert && key) {
+        tlsConfig = {
+          ca: ca,
+          cert: cert,
+          key: key,
+        }
+      }
+    }
 
     app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
       transport: Transport.REDIS,
@@ -58,9 +79,13 @@ async function bootstrap() {
         port: Number(url.port) || 6379,
         password: url.password || undefined,
         username: url.username || undefined,
-        tls: url.protocol === 'rediss:' ? {} : undefined,
-        retryAttempts: 10,
-        retryDelay: 3000,
+        tls: tlsConfig,
+        retryStrategy: (times: number) => {
+          if (times > 10) {
+            return null
+          }
+          return Math.min(times * 500, 3000) // Progressive backoff up to 3s
+        },
       },
     })
 
