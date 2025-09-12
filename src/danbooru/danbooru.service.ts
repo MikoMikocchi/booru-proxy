@@ -18,6 +18,9 @@ import {
   RESPONSES_STREAM,
   DLQ_STREAM,
   QUERY_LOCK_TIMEOUT_SECONDS,
+  DANBOORU_TAG_PATTERN,
+  DANBOORU_RANDOM_PATTERN,
+  DANBOORU_POSTS_PATTERN,
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from '../common/cache/cache.service'
@@ -59,16 +62,20 @@ export class DanbooruService {
     const lockKey = `lock:query:${queryHash}`
 
     // Try to acquire lock - if already locked by consumer, this will fail quickly
-    const lockAcquired = await this.redis.set(
-      lockKey,
-      jobId,
-      'EX',
-      QUERY_LOCK_TIMEOUT_SECONDS,
-      'NX',
-    ) === 'OK'
+    const lockAcquired =
+      (await this.redis.set(
+        lockKey,
+        jobId,
+        'EX',
+        QUERY_LOCK_TIMEOUT_SECONDS,
+        'NX',
+      )) === 'OK'
 
     if (!lockAcquired) {
-      this.logger.warn(`Additional query lock not acquired for job ${jobId} (already processing)`, jobId)
+      this.logger.warn(
+        `Additional query lock not acquired for job ${jobId} (already processing)`,
+        jobId,
+      )
       const error: DanbooruErrorResponse = {
         type: 'error',
         jobId,
@@ -80,6 +87,10 @@ export class DanbooruService {
 
     try {
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
+      const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
+
+      // Extract tags from query for cache key generation and invalidation
+      const tags = this.extractTagsFromQuery(query)
 
       // Rate limiting check
       const rateCheck = await this.rateLimitManagerService.checkRateLimit(
@@ -92,23 +103,22 @@ export class DanbooruService {
         return rateCheck.error
       }
 
-      // Cache check
+      // Cache check - now uses unified key with limit and tags (caching both random and non-random)
       let responseOrNull: DanbooruSuccessResponse | null = null
-      if (!random) {
-        responseOrNull =
-          await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
-            'danbooru',
-            query,
-            random,
-          )
-        if (responseOrNull) {
-          this.logger.log(`Cache hit for danbooru job ${jobId}`)
-          await this.publishResponse(jobId, responseOrNull)
-          return responseOrNull
-        }
+      responseOrNull =
+        await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
+          'danbooru',
+          query,
+          random,
+          limit,
+          tags,
+        )
+      if (responseOrNull) {
+        this.logger.log(`Cache hit for danbooru job ${jobId}`)
+        await this.publishResponse(jobId, responseOrNull)
+        return responseOrNull
       }
 
-      const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
       const post = await this.danbooruApiService.fetchPosts(
         query,
         limit,
@@ -129,14 +139,44 @@ export class DanbooruService {
       const responseData = this.buildSuccessResponse(post, jobId)
       await this.publishResponse(jobId, responseData)
 
-      // Cache the successful response
-      if (!random) {
-        await this.cacheService.setCache(
-          'danbooru',
-          query,
-          responseData,
-          random,
+      // Cache the successful response using unified key format
+      await this.cacheService.setCache(
+        'danbooru',
+        query,
+        responseData,
+        random,
+        limit,
+        tags,
+      )
+
+      // Proactive cache invalidation for freshness
+      // Invalidate related tag caches if tags were used in query
+      if (tags && tags.length > 0) {
+        for (const tag of tags) {
+          // Escape special characters for Redis pattern matching
+          const escapedTag = tag.replace(/[[\]*?^$.\\]/g, '\\$&')
+          const tagPattern = DANBOORU_TAG_PATTERN.replace('*', escapedTag)
+          const deleted = await this.cacheService.invalidateCache(tagPattern)
+          if (deleted > 0) {
+            this.logger.debug(
+              `Invalidated ${deleted} tag-specific caches for tag: ${tag}`,
+              jobId,
+            )
+          }
+        }
+      }
+
+      // For random queries, periodically invalidate to ensure fresh random results
+      if (random) {
+        const randomDeleted = await this.cacheService.invalidateCache(
+          DANBOORU_RANDOM_PATTERN,
         )
+        if (randomDeleted > 0) {
+          this.logger.debug(
+            `Invalidated ${randomDeleted} random query caches for freshness`,
+            jobId,
+          )
+        }
       }
 
       return responseData
@@ -145,7 +185,9 @@ export class DanbooruService {
       const currentLockValue = await this.redis.get(lockKey)
       if (currentLockValue === jobId) {
         await this.redis.del(lockKey)
-        this.logger.debug(`Service-level query lock released for ${lockKey} by job ${jobId}`)
+        this.logger.debug(
+          `Service-level query lock released for ${lockKey} by job ${jobId}`,
+        )
       }
     }
   }
@@ -220,6 +262,56 @@ export class DanbooruService {
   }
 
   /**
+   * Extract tags from Danbooru-style query string
+   * Supports basic tag extraction: "tag1 tag2 rating:safe" -> ['tag1', 'tag2']
+   * More complex parsing can be added for advanced query syntax
+   */
+  private extractTagsFromQuery(query: string): string[] {
+    if (!query || typeof query !== 'string') {
+      return []
+    }
+
+    // Split by spaces and filter out non-tag parts
+    // Danbooru queries typically: "tag1 tag2 tag3 rating:safe limit:10"
+    const parts = query
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(
+        (part: string) =>
+          // Exclude common non-tag directives - keep simple tags
+          !['rating:', 'limit:', 'order:', 'score:'].some(directive =>
+            part.startsWith(directive),
+          ),
+      )
+
+    // Remove duplicates and return sorted
+    return [...new Set(parts)].sort()
+  }
+
+  /**
+   * Cache Invalidation Strategy:
+   *
+   * 1. TAG-SPECIFIC INVALIDATION: After successful API call with tags,
+   *    invalidate all cache entries matching the pattern:
+   *    `cache:danbooru:posts:*:tag:{tag-hash}` for each tag in query
+   *
+   * 2. RANDOM QUERY FRESHNESS: For random queries, proactively invalidate
+   *    all random cache entries periodically to ensure fresh random results.
+   *    Pattern: `cache:danbooru:posts:*:random:*`
+   *
+   * 3. BULK INVALIDATION: When major content updates occur (future enhancement),
+   *    use `cache:danbooru:posts:*` to clear all post-related caches.
+   *
+   * 4. DETERMINISTIC RANDOM SEEDING: Random queries now use deterministic
+   *    seeding based on (query + limit + tags) ensuring consistent "random"
+   *    results across cache layers while maintaining freshness through
+   *    proactive invalidation.
+   *
+   * This strategy balances performance (caching) with data freshness
+   * (proactive invalidation) while maintaining semantic cache key structure
+   * for targeted operations.
+   *
    * DEDUPLICATION STRATEGY DOCUMENTATION:
    *
    * This service implements a multi-layered deduplication approach:

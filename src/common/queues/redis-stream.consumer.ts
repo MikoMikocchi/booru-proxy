@@ -14,7 +14,10 @@ import { CreateRequestDto } from '../../danbooru/dto/create-request.dto'
 import { DanbooruService } from '../../danbooru/danbooru.service'
 import { ValidationService } from '../../danbooru/validation.service'
 import { addToDLQ, dedupCheck } from './utils/dlq.util'
-import { DEDUP_TTL_SECONDS, QUERY_LOCK_TIMEOUT_SECONDS } from '../../common/constants'
+import {
+  DEDUP_TTL_SECONDS,
+  QUERY_LOCK_TIMEOUT_SECONDS,
+} from '../../common/constants'
 import * as crypto from 'crypto'
 import { ModuleRef } from '@nestjs/core'
 
@@ -61,18 +64,33 @@ export class RedisStreamConsumer
     )
 
     // Enhanced deduplication: Check for recent duplicate queries in DLQ first
-    const hasRecentDlqDuplicate = await dedupCheck(this.redis, 'danbooru', query)
+    const hasRecentDlqDuplicate = await dedupCheck(
+      this.redis,
+      'danbooru',
+      query,
+    )
     if (hasRecentDlqDuplicate) {
-      this.logger.warn(`Recent duplicate query found in DLQ for job ${jobId}, skipping`, jobId)
+      this.logger.warn(
+        `Recent duplicate query found in DLQ for job ${jobId}, skipping`,
+        jobId,
+      )
       // Note: danbooruService not yet initialized, publish directly to stream
       const responseKey = 'danbooru:responses'
       const errorResponse = JSON.stringify({
         type: 'error',
         jobId,
-        error: 'Duplicate request detected in recent failures - please try again later',
-        timestamp: Date.now()
+        error:
+          'Duplicate request detected in recent failures - please try again later',
+        timestamp: Date.now(),
       })
-      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse)
+      await this.redis.xadd(
+        responseKey,
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        errorResponse,
+      )
       return { skipped: true, reason: 'DLQ duplicate' }
     }
 
@@ -81,15 +99,25 @@ export class RedisStreamConsumer
     const lockKey = `lock:query:${queryHash}`
     const lockAcquired = await this.acquireLock(lockKey, jobId)
     if (!lockAcquired) {
-      this.logger.warn(`Failed to acquire query lock for job ${jobId}, skipping`, jobId)
+      this.logger.warn(
+        `Failed to acquire query lock for job ${jobId}, skipping`,
+        jobId,
+      )
       const responseKey = 'danbooru:responses'
       const errorResponse = JSON.stringify({
         type: 'error',
         jobId,
         error: 'Query currently being processed - please wait and try again',
-        timestamp: Date.now()
+        timestamp: Date.now(),
       })
-      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse)
+      await this.redis.xadd(
+        responseKey,
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        errorResponse,
+      )
       return { skipped: true, reason: 'lock failed' }
     }
 
@@ -125,7 +153,11 @@ export class RedisStreamConsumer
         )
         await this.danbooruService.publishResponse(jobId, validation.error)
         // Check DLQ duplicate before adding validation error
-        const hasValidationDlqDuplicate = await dedupCheck(this.redis, 'danbooru', query)
+        const hasValidationDlqDuplicate = await dedupCheck(
+          this.redis,
+          'danbooru',
+          query,
+        )
         if (!hasValidationDlqDuplicate) {
           await addToDLQ(
             this.redis,
@@ -135,7 +167,10 @@ export class RedisStreamConsumer
             query,
           )
         } else {
-          this.logger.warn(`Skipping DLQ entry for validation error - recent duplicate found`, jobId)
+          this.logger.warn(
+            `Skipping DLQ entry for validation error - recent duplicate found`,
+            jobId,
+          )
         }
         throw new Error(`Validation failed: ${validation.error.error}`)
       }
@@ -150,7 +185,11 @@ export class RedisStreamConsumer
   }
 
   // Helper method to acquire query lock with retry and exponential backoff
-  private async acquireLock(lockKey: string, jobId: string, maxRetries = 3): Promise<boolean> {
+  private async acquireLock(
+    lockKey: string,
+    jobId: string,
+    maxRetries = 3,
+  ): Promise<boolean> {
     let retryCount = 0
     let delay = 100 // Start with 100ms
 
@@ -169,12 +208,17 @@ export class RedisStreamConsumer
       }
 
       retryCount++
-      this.logger.debug(`Lock acquisition failed for ${lockKey}, retry ${retryCount}/${maxRetries}`, jobId)
+      this.logger.debug(
+        `Lock acquisition failed for ${lockKey}, retry ${retryCount}/${maxRetries}`,
+        jobId,
+      )
       await new Promise(resolve => setTimeout(resolve, delay))
       delay *= 2 // Exponential backoff
     }
 
-    this.logger.warn(`Failed to acquire lock after ${maxRetries} retries for job ${jobId}`)
+    this.logger.warn(
+      `Failed to acquire lock after ${maxRetries} retries for job ${jobId}`,
+    )
     return false
   }
 
@@ -185,7 +229,9 @@ export class RedisStreamConsumer
       await this.redis.del(lockKey)
       this.logger.debug(`Query lock released for ${lockKey} by job ${jobId}`)
     } else {
-      this.logger.debug(`Lock ${lockKey} not owned by job ${jobId}, skipping release`)
+      this.logger.debug(
+        `Lock ${lockKey} not owned by job ${jobId}, skipping release`,
+      )
     }
   }
 }

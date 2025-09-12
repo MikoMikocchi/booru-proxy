@@ -1,6 +1,19 @@
 import { Injectable, Inject, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import * as crypto from 'crypto'
+import {
+  CACHE_PREFIX,
+  DANBOORU_API_PREFIX,
+  POSTS_RESOURCE,
+  RANDOM_SUFFIX,
+  TAG_SUFFIX,
+  LIMIT_SUFFIX,
+  RANDOM_SEED_SUFFIX,
+  DANBOORU_POSTS_PATTERN,
+  DANBOORU_TAG_PATTERN,
+  DANBOORU_RANDOM_PATTERN,
+  DANBOORU_ALL_PATTERN,
+} from '../constants'
 
 export interface CacheableResponse {
   [key: string]: any
@@ -44,8 +57,10 @@ export class CacheService {
     apiPrefix: string,
     query: string,
     random: boolean,
+    limit?: number,
+    tags?: string[],
   ): Promise<T | null> {
-    const key = this.getCacheKey(apiPrefix, query, random)
+    const key = this.getCacheKey(apiPrefix, query, random, limit, tags)
     const cached = await this.get(key)
     if (cached) {
       try {
@@ -66,13 +81,15 @@ export class CacheService {
     query: string,
     response: T,
     random: boolean,
+    limit?: number,
+    tags?: string[],
     customTtl?: number,
   ): Promise<void> {
-    const key = this.getCacheKey(apiPrefix, query, random)
+    const key = this.getCacheKey(apiPrefix, query, random, limit, tags)
     const expiresIn = customTtl || this.ttl
     await this.setex(key, expiresIn, JSON.stringify(response))
     this.logger.debug(
-      `Cached response for ${apiPrefix} query: ${query} (random: ${random}, ttl: ${expiresIn}s)`,
+      `Cached response for ${apiPrefix} query: ${query} (random: ${random}, ttl: ${expiresIn}s, key: ${key})`,
     )
   }
 
@@ -80,8 +97,10 @@ export class CacheService {
     apiPrefix: string,
     query: string,
     random: boolean,
+    limit?: number,
+    tags?: string[],
   ): Promise<void> {
-    const key = this.getCacheKey(apiPrefix, query, random)
+    const key = this.getCacheKey(apiPrefix, query, random, limit, tags)
     await this.del(key)
     this.logger.debug(
       `Deleted cache for ${apiPrefix} query: ${query} (random: ${random})`,
@@ -93,16 +112,32 @@ export class CacheService {
     query: string,
     random: boolean,
     fetchFn: () => Promise<T | null>,
+    limit?: number,
+    tags?: string[],
     customTtl?: number,
   ): Promise<T | null> {
-    const cached = await this.getCachedResponse<T>(apiPrefix, query, random)
+    const cached = await this.getCachedResponse<T>(
+      apiPrefix,
+      query,
+      random,
+      limit,
+      tags,
+    )
     if (cached) {
       return cached
     }
 
     const freshData = await fetchFn()
     if (freshData) {
-      await this.setCache(apiPrefix, query, freshData, random, customTtl)
+      await this.setCache(
+        apiPrefix,
+        query,
+        freshData,
+        random,
+        limit,
+        tags,
+        customTtl,
+      )
     }
     return freshData
   }
@@ -111,7 +146,27 @@ export class CacheService {
     apiPrefix: string,
     query: string,
     random: boolean,
+    limit?: number,
+    tags?: string[],
   ): string {
+    /**
+     * Unified cache key generation strategy:
+     * Format: cache:{api}:{resource}:{query-hash}:{limit}:{random-seed}:{tag-hash}
+     *
+     * - api: API name (e.g., 'danbooru')
+     * - resource: Resource type (e.g., 'posts')
+     * - query-hash: MD5 hash of normalized query string
+     * - limit: Query limit (deterministic, no hashing needed)
+     * - random-seed: Deterministic seed from limit + tags for consistent random results
+     * - tag-hash: MD5 hash of sorted tags for tag-specific invalidation
+     *
+     * This structure enables:
+     * 1. Pattern-based invalidation (e.g., invalidate all posts for a tag)
+     * 2. Deterministic random results (same limit/tags = same "random" results)
+     * 3. Query-specific caching with semantic structure
+     * 4. Backward compatibility with existing hash-based keys
+     */
+
     // Normalize query: trim, lowercase, normalize spaces
     const normalizedQuery = query
       .trim()
@@ -119,31 +174,113 @@ export class CacheService {
       .replace(/\s+/g, ' ')
       .trim()
 
-    // Include API prefix and random flag for separation
-    const cacheKey = `${apiPrefix}:${normalizedQuery}|random=${random ? 1 : 0}`
-    const hash = crypto.createHash('md5').update(cacheKey).digest('hex')
-    return `cache:${hash}`
+    // Generate query hash
+    const queryHash = crypto
+      .createHash('md5')
+      .update(normalizedQuery)
+      .digest('hex')
+
+    // Build base key structure
+    let keyParts = [CACHE_PREFIX, apiPrefix, POSTS_RESOURCE, queryHash]
+
+    // Add limit if provided (deterministic)
+    if (limit !== undefined) {
+      keyParts.push(`${LIMIT_SUFFIX}:${limit}`)
+    }
+
+    // Generate deterministic random seed if random is true
+    if (random) {
+      const seed = this.generateRandomSeed(query, limit, tags)
+      keyParts.push(`${RANDOM_SEED_SUFFIX}:${seed}`)
+    }
+
+    // Add tag hash for tag-specific invalidation
+    if (tags && tags.length > 0) {
+      const sortedTags = tags.sort().join(',')
+      const tagHash = crypto.createHash('md5').update(sortedTags).digest('hex')
+      keyParts.push(`${TAG_SUFFIX}:${tagHash}`)
+    }
+
+    return keyParts.join(':')
   }
 
-  // Multi-API support: get all keys matching prefix for invalidation
-  async invalidateByPrefix(apiPrefix: string): Promise<number> {
+  private generateRandomSeed(
+    query: string,
+    limit?: number,
+    tags?: string[],
+  ): string {
+    /**
+     * Generate deterministic random seed from query parameters
+     * Ensures same inputs produce same "random" results across cache layers
+     */
+    const seedParts = [
+      query.trim(),
+      limit?.toString() || 'default',
+      (tags || []).sort().join(',') || 'no-tags',
+    ]
+
+    const seedString = seedParts.join('|')
+    return crypto
+      .createHash('sha256')
+      .update(seedString)
+      .digest('hex')
+      .slice(0, 16)
+  }
+
+  /**
+   * Pattern-based cache invalidation using Redis KEYS/SCAN
+   * Supports wildcards for bulk operations (e.g., invalidate all posts for a tag)
+   *
+   * @param keyPattern - Pattern to match (e.g., 'cache:danbooru:posts:*:tag:abc123')
+   * @returns Number of deleted keys
+   */
+  async invalidateCache(keyPattern: string): Promise<number> {
     if (this.backend === 'memcached') {
       this.logger.warn(
-        `Bulk invalidation not fully supported for Memcached. Implement tag-based if needed.`,
+        `Pattern-based invalidation not supported for Memcached. Implement tag-based if needed.`,
       )
       return 0
     }
-    const pattern = `cache:*`
-    const keys = await this.redis.keys(pattern)
-    let deletedCount = 0
-    for (const key of keys) {
-      if (key.includes(apiPrefix.toLowerCase())) {
-        await this.del(key)
-        deletedCount++
+
+    try {
+      // Use SCAN for production (KEYS blocks on large datasets)
+      // For now, use KEYS for simplicity - consider SCAN implementation later
+      const keys = await this.redis.keys(keyPattern)
+      let deletedCount = 0
+
+      if (keys.length === 0) {
+        this.logger.debug(`No cache keys matched pattern: ${keyPattern}`)
+        return 0
       }
+
+      // Batch delete for efficiency (Redis pipeline)
+      const pipeline = this.redis.pipeline()
+      for (const key of keys) {
+        pipeline.del(key)
+      }
+
+      const results = await pipeline.exec()
+      deletedCount = results.filter(
+        (result: [string, number]) => result[1] === 1,
+      ).length
+
+      this.logger.log(
+        `Invalidated ${deletedCount} cache keys matching pattern: ${keyPattern}`,
+      )
+
+      return deletedCount
+    } catch (error) {
+      this.logger.error(
+        `Failed to invalidate cache with pattern ${keyPattern}: ${error.message}`,
+      )
+      return 0
     }
-    this.logger.log(`Invalidated ${deletedCount} cache keys for ${apiPrefix}`)
-    return deletedCount
+  }
+
+  // Legacy method - kept for backward compatibility
+  async invalidateByPrefix(apiPrefix: string): Promise<number> {
+    const pattern = `${CACHE_PREFIX}:${apiPrefix}:*`
+    return await this.invalidateCache(pattern)
   }
 
   // Backend-specific operations

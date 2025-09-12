@@ -7,9 +7,7 @@ import { retryFromDLQ, moveToDeadQueue } from './utils/dlq.util'
 export class DlqConsumer implements OnModuleInit {
   private readonly logger = new Logger(DlqConsumer.name)
 
-  constructor(
-    @Inject('REDIS_CLIENT') private readonly redis: Redis,
-  ) {}
+  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
 
   async onModuleInit() {
     this.logger.log('Starting DLQ stream processor')
@@ -63,7 +61,9 @@ export class DlqConsumer implements OnModuleInit {
         if (isRetryableError && retryCount < MAX_DLQ_RETRIES) {
           // Retry by adding back to main stream
           const newRetryCount = retryCount + 1
-          this.logger.log(`Retrying job ${jobId} from DLQ to main stream (attempt ${newRetryCount})`)
+          this.logger.log(
+            `Retrying job ${jobId} from DLQ to main stream (attempt ${newRetryCount})`,
+          )
 
           const result = await retryFromDLQ(
             this.redis,
@@ -75,7 +75,9 @@ export class DlqConsumer implements OnModuleInit {
           )
 
           if (result.success) {
-            this.logger.log(`Successfully retried job ${jobId}, removed from DLQ`)
+            this.logger.log(
+              `Successfully retried job ${jobId}, removed from DLQ`,
+            )
           } else {
             this.logger.error(`Failed to retry job ${jobId}: ${result.error}`)
             // Leave in DLQ for manual intervention

@@ -1,1 +1,1 @@
-export * from './redis/utils/redis.util';
+export * from './redis/utils/redis.util'

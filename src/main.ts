@@ -14,10 +14,12 @@ async function gracefulShutdown() {
     await app.close()
     if (redisClient) {
       const quitPromise = redisClient.quit()
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => {
-        quitTimedOut = true
-        reject(new Error('Redis quit timeout'))
-      }, 5000))
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => {
+          quitTimedOut = true
+          reject(new Error('Redis quit timeout'))
+        }, 5000),
+      )
 
       try {
         await Promise.race([quitPromise, timeoutPromise])
@@ -48,21 +50,18 @@ async function bootstrap() {
       configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
     const url = new URL(redisUrl)
 
-    app = await NestFactory.createMicroservice<MicroserviceOptions>(
-      AppModule,
-      {
-        transport: Transport.REDIS,
-        options: {
-          host: url.hostname,
-          port: Number(url.port) || 6379,
-          password: url.password || undefined,
-          username: url.username || undefined,
-          tls: url.protocol === 'rediss:' ? {} : undefined,
-          retryAttempts: 10,
-          retryDelay: 3000,
-        },
+    app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
+      transport: Transport.REDIS,
+      options: {
+        host: url.hostname,
+        port: Number(url.port) || 6379,
+        password: url.password || undefined,
+        username: url.username || undefined,
+        tls: url.protocol === 'rediss:' ? {} : undefined,
+        retryAttempts: 10,
+        retryDelay: 3000,
       },
-    )
+    })
 
     console.log('Microservice started (Redis streams)')
 
@@ -75,7 +74,6 @@ async function bootstrap() {
     // Set up signal handlers after full initialization
     process.on('SIGINT', gracefulShutdown)
     process.on('SIGTERM', gracefulShutdown)
-
   } catch (error) {
     console.error('Failed to start microservice:', error)
     process.exit(1)

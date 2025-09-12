@@ -15,3 +15,18 @@ export const MAX_DLQ_RETRIES = 5
 // Deduplication and locking constants
 export const QUERY_LOCK_TIMEOUT_SECONDS = 300 // 5 minutes
 export const DLQ_DEDUP_WINDOW_SECONDS = 3600 // 1 hour
+
+// Cache key prefixes and patterns
+export const CACHE_PREFIX = 'cache'
+export const DANBOORU_API_PREFIX = 'danbooru'
+export const POSTS_RESOURCE = 'posts'
+export const RANDOM_SUFFIX = 'random'
+export const TAG_SUFFIX = 'tag'
+export const LIMIT_SUFFIX = 'limit'
+export const RANDOM_SEED_SUFFIX = 'seed'
+
+// Cache invalidation patterns
+export const DANBOORU_POSTS_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${POSTS_RESOURCE}:*`
+export const DANBOORU_TAG_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${POSTS_RESOURCE}:*:${TAG_SUFFIX}:*`
+export const DANBOORU_RANDOM_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:${POSTS_RESOURCE}:*:${RANDOM_SUFFIX}:*`
+export const DANBOORU_ALL_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:*`

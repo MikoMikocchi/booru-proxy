@@ -1,5 +1,10 @@
 import Redis from 'ioredis'
-import { DLQ_DEDUP_WINDOW_SECONDS, REQUESTS_STREAM, DLQ_STREAM, MAX_DLQ_RETRIES } from '../../constants'
+import {
+  DLQ_DEDUP_WINDOW_SECONDS,
+  REQUESTS_STREAM,
+  DLQ_STREAM,
+  MAX_DLQ_RETRIES,
+} from '../../constants'
 
 export async function addToDLQ(
   redis: Redis,
