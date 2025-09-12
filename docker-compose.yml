@@ -24,6 +24,7 @@ services:
       - CACHE_TTL_SECONDS=3600
       - DANBOORU_LIMIT=1
       - DANBOORU_RANDOM=true
+      - API_SECRET=${API_SECRET}
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -h redis ping || exit 1"]
       interval: 30s

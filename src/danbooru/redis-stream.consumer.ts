@@ -10,6 +10,7 @@ import { plainToClass } from 'class-transformer'
 import { validate } from 'class-validator'
 import { CreateRequestDto } from './dto/create-request.dto'
 import { DanbooruService } from './danbooru.service'
+import { ValidationService } from './validation.service'
 import { addToDLQ } from './utils/dlq.util'
 import {
   REQUESTS_STREAM,
@@ -28,6 +29,7 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     private readonly danbooruService: DanbooruService,
+    private readonly validationService: ValidationService,
   ) {
     this.redis.on('error', (error: Error) => {
       this.logger.error(
@@ -99,52 +101,30 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                   jobData[fields[i]] = fields[i + 1]
                 }
 
-                const requestDto = plainToClass(CreateRequestDto, jobData)
-                const errors = await validate(requestDto)
-                if (errors.length > 0) {
+                // Use ValidationService for comprehensive validation including API key verification
+                const validation = await this.validationService.validateRequest(jobData)
+                if (!validation.valid) {
                   const jobId = jobData.jobId || 'unknown'
                   const maskedQuery = jobData.query
                     ? jobData.query.replace(/./g, '*')
                     : '**'
                   this.logger.warn(
-                    `Validation error for job ${jobId}: ${JSON.stringify(errors)}, query: ${maskedQuery}`,
+                    `Validation failed for job ${jobId}: ${validation.error.error}, query: ${maskedQuery}`,
                     jobId,
                   )
-                  await this.danbooruService.publishResponse(jobId, {
-                    type: 'error',
-                    jobId,
-                    error: 'Invalid request format',
-                  })
-                  // Add to dead-letter queue for permanent validation error
+                  await this.danbooruService.publishResponse(jobId, validation.error)
+                  // Add to dead-letter queue for validation failures
                   await addToDLQ(
                     this.redis,
                     jobId,
-                    'Invalid request format',
+                    validation.error.error,
                     jobData.query || '',
                   )
                   await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
                   return
                 }
 
-                // Validate API key presence for authentication
-                if (!requestDto.apiKey) {
-                  const jobId = requestDto.jobId
-                  this.logger.warn(`Missing API key for job ${jobId}`, jobId)
-                  await this.danbooruService.publishResponse(jobId, {
-                    type: 'error',
-                    jobId,
-                    error: 'Missing API key - authentication required',
-                  })
-                  await addToDLQ(
-                    this.redis,
-                    jobId,
-                    'Missing API key',
-                    requestDto.query,
-                  )
-                  await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
-                  return
-                }
-
+                const requestDto = validation.dto
                 const { jobId, query } = requestDto
 
                 // Deduplication check with per-item TTL

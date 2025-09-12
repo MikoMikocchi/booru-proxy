@@ -22,10 +22,10 @@ export class CreateRequestDto {
   })
   query: string
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @MaxLength(100)
-  apiKey: string
+  apiKey?: string
 
   @IsOptional()
   @IsString()

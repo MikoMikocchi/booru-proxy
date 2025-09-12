@@ -3,6 +3,8 @@ import { DanbooruService } from '../src/danbooru/danbooru.service'
 import { Module } from '@nestjs/common'
 import { RedisModule } from '../src/common/redis/redis.module'
 import Redis from 'ioredis'
+import { ValidationService } from '../src/danbooru/validation.service'
+import { createHmac } from 'crypto'
 import { GenericContainer, StartedTestContainer } from 'testcontainers'
 import { ConfigModule } from '@nestjs/config'
 import nock from 'nock'
@@ -77,6 +79,14 @@ describe('DanbooruService (e2e)', () => {
   })
   class TestDanbooruModule {}
 
+  // Auth test module with real validation
+  @Module({
+    imports: [ConfigModule.forRoot({ isGlobal: true })],
+    providers: [ValidationService],
+    exports: [ValidationService],
+  })
+  class AuthTestModule {}
+
   beforeAll(async () => {
     // Start Redis container
     const redisContainerInstance = await new GenericContainer('redis:alpine')
@@ -89,12 +99,13 @@ describe('DanbooruService (e2e)', () => {
 
     const redisUrl = `redis://localhost:${redisPort}`
     process.env.REDIS_URL = redisUrl
+    process.env.API_SECRET = 'test-secret'
 
     redisClient = new Redis(redisUrl)
     await redisClient.ping()
 
     const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule.forRoot({ isGlobal: true }), TestDanbooruModule],
+      imports: [ConfigModule.forRoot({ isGlobal: true }), TestDanbooruModule, AuthTestModule],
       providers: [
         { provide: 'REDIS_CLIENT', useValue: redisClient },
         { provide: DanbooruApiService, useValue: mockDanbooruApiService },
@@ -102,6 +113,12 @@ describe('DanbooruService (e2e)', () => {
         { provide: RateLimiterService, useValue: mockRateLimiterService },
       ],
     }).compile()
+
+    const authModule: TestingModule = await Test.createTestingModule({
+      imports: [AuthTestModule],
+    }).compile()
+
+    const validationService = authModule.get<ValidationService>(ValidationService)
 
     // Create manual service mock using existing mocks - bypass DI entirely
     service = {
