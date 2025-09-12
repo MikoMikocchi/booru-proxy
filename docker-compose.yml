@@ -1,9 +1,7 @@
 services:
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -17,7 +15,7 @@ services:
       redis:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - DANBOORU_LOGIN=${DANBOORU_LOGIN}
       - DANBOORU_API_KEY=${DANBOORU_API_KEY}
       - RATE_LIMIT_PER_MINUTE=60
