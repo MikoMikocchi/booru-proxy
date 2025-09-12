@@ -13,7 +13,7 @@ export const DEAD_QUEUE_STREAM = 'danbooru-dead'
 export const MAX_DLQ_RETRIES = 5
 
 // Deduplication and locking constants
-export const QUERY_LOCK_TIMEOUT_SECONDS = 300 // 5 minutes
+export const QUERY_LOCK_TIMEOUT_SECONDS = 30 // Reduced from 300s to 30s for faster lock release
 export const DLQ_DEDUP_WINDOW_SECONDS = 3600 // 1 hour
 
 // Cache key prefixes and patterns

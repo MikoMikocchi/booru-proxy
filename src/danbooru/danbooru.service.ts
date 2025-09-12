@@ -26,6 +26,7 @@ import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from '../common/cache/cache.service'
 import { CacheManagerService } from '../common/cache/cache-manager.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
+import { LockUtil } from '../common/redis/utils/lock.util'
 import Redis from 'ioredis'
 import * as crypto from 'crypto'
 
@@ -36,6 +37,7 @@ export class DanbooruService {
   constructor(
     private configService: ConfigService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    private readonly lockUtil: LockUtil,
     private readonly danbooruApiService: DanbooruApiService,
     private readonly cacheService: CacheService,
     private readonly rateLimitManagerService: RateLimitManagerService,
@@ -61,31 +63,36 @@ export class DanbooruService {
     const queryHash = crypto.createHash('sha256').update(query).digest('hex')
     const lockKey = `lock:query:${queryHash}`
 
-    // Try to acquire lock - if already locked by consumer, this will fail quickly
-    const lockAcquired =
-      (await this.redis.set(
-        lockKey,
-        jobId,
-        'EX',
-        QUERY_LOCK_TIMEOUT_SECONDS,
-        'NX',
-      )) === 'OK'
-
-    if (!lockAcquired) {
-      this.logger.warn(
-        `Additional query lock not acquired for job ${jobId} (already processing)`,
-        jobId,
-      )
-      const error: DanbooruErrorResponse = {
-        type: 'error',
-        jobId,
-        error: 'Query is currently being processed',
-      }
-      await this.publishResponse(jobId, error)
-      return error
-    }
+    let lockValue: string | null = null
+    let heartbeatInterval: NodeJS.Timeout | null = null
 
     try {
+      // Try to acquire lock using LockUtil
+      lockValue = await this.lockUtil.acquireLock(lockKey, QUERY_LOCK_TIMEOUT_SECONDS)
+      if (!lockValue) {
+        this.logger.warn(
+          `Additional query lock not acquired for job ${jobId} (already processing)`,
+          jobId,
+        )
+        const error: DanbooruErrorResponse = {
+          type: 'error',
+          jobId,
+          error: 'Query is currently being processed',
+        }
+        await this.publishResponse(jobId, error)
+        return error
+      }
+
+      // Start heartbeat to extend lock every 10s
+      heartbeatInterval = setInterval(async () => {
+        if (lockValue) {
+          const extended = await this.lockUtil.extendLock(lockKey, lockValue, QUERY_LOCK_TIMEOUT_SECONDS)
+          if (!extended) {
+            this.logger.warn(`Failed to extend lock for ${lockKey} in service`)
+          }
+        }
+      }, 10000)
+
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
       const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
 
@@ -181,13 +188,19 @@ export class DanbooruService {
 
       return responseData
     } finally {
+      // Stop heartbeat
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+      }
+
       // Always release the query lock if we acquired it
-      const currentLockValue = await this.redis.get(lockKey)
-      if (currentLockValue === jobId) {
-        await this.redis.del(lockKey)
-        this.logger.debug(
-          `Service-level query lock released for ${lockKey} by job ${jobId}`,
-        )
+      if (lockValue) {
+        const released = await this.lockUtil.releaseLock(lockKey, lockValue)
+        if (released) {
+          this.logger.debug(
+            `Service-level query lock released for ${lockKey} by job ${jobId}`,
+          )
+        }
       }
     }
   }

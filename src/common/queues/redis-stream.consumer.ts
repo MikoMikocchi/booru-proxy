@@ -8,9 +8,6 @@ import {
 import { Processor, WorkerHost } from '@nestjs/bullmq'
 import { Job } from 'bullmq'
 import Redis from 'ioredis'
-import { plainToClass } from 'class-transformer'
-import { validate } from 'class-validator'
-import { CreateRequestDto } from '../../danbooru/dto/create-request.dto'
 import { DanbooruService } from '../../danbooru/danbooru.service'
 import { ValidationService } from '../../danbooru/validation.service'
 import { addToDLQ, dedupCheck } from './utils/dlq.util'
@@ -19,6 +16,7 @@ import {
   QUERY_LOCK_TIMEOUT_SECONDS,
   getStreamName,
 } from '../../common/constants'
+import { LockUtil } from '../redis/utils/lock.util'
 import * as crypto from 'crypto'
 import { encrypt, decrypt } from '../crypto/crypto.util'
 import { ModuleRef } from '@nestjs/core'
@@ -35,6 +33,7 @@ export class RedisStreamConsumer
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    private readonly lockUtil: LockUtil,
     @Inject(ModuleRef) private moduleRef: ModuleRef,
   ) {
     super()
@@ -227,32 +226,8 @@ export class RedisStreamConsumer
       .update(query)
       .digest('hex')
     const lockKey = `lock:query:${apiPrefix}:${fullQueryHash}`
-    const lockAcquired = await this.acquireLock(lockKey, jobId)
-
-    if (!lockAcquired) {
-      this.logger.warn(
-        `Failed to acquire query lock for ${apiPrefix} job ${jobId} (hash: ${queryHash}), skipping`,
-        jobId,
-      )
-
-      const responseKey = getStreamName(apiPrefix, 'responses')
-      const errorResponse = JSON.stringify({
-        type: 'error',
-        jobId,
-        error: 'Query currently being processed - please wait and try again',
-        timestamp: Date.now(),
-      })
-
-      await this.redis.xadd(
-        responseKey,
-        '*',
-        'jobId',
-        jobId,
-        'data',
-        errorResponse,
-      )
-      return { skipped: true, reason: 'lock failed' }
-    }
+    let lockValue: string | null = null
+    let heartbeatInterval: NodeJS.Timeout | null = null
 
     try {
       // 2. Job-level deduplication as final safeguard
@@ -376,12 +351,19 @@ export class RedisStreamConsumer
       )
       return { success: false, error: errorMessage }
     } finally {
+      // Stop heartbeat
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+      }
+
       // Always release the query lock
-      await this.releaseLock(lockKey, jobId)
+      if (lockValue) {
+        await this.releaseLock(lockKey, lockValue)
+      }
     }
   }
 
-  // Helper method to acquire query lock with retry and exponential backoff
+  // Helper method to acquire query lock with retry and exponential backoff using LockUtil
   private async acquireLock(
     lockKey: string,
     jobId: string,
@@ -391,15 +373,11 @@ export class RedisStreamConsumer
     let delay = 100 // Start with 100ms
 
     while (retryCount < maxRetries) {
-      const result = await this.redis.set(
+      const lockValue = await this.lockUtil.acquireLock(
         lockKey,
-        jobId, // Use jobId as lock value for ownership verification
-        'EX',
         QUERY_LOCK_TIMEOUT_SECONDS,
-        'NX',
       )
-
-      if (result === 'OK') {
+      if (lockValue) {
         this.logger.debug(`Query lock acquired for ${lockKey} by job ${jobId}`)
         return true
       }
@@ -419,16 +397,13 @@ export class RedisStreamConsumer
     return false
   }
 
-  // Helper method to release query lock (only if owned by this job)
-  private async releaseLock(lockKey: string, jobId: string): Promise<void> {
-    const currentLockValue = await this.redis.get(lockKey)
-    if (currentLockValue === jobId) {
-      await this.redis.del(lockKey)
-      this.logger.debug(`Query lock released for ${lockKey} by job ${jobId}`)
+  // Helper method to release query lock using LockUtil (only if owned by this job)
+  private async releaseLock(lockKey: string, lockValue: string): Promise<void> {
+    const released = await this.lockUtil.releaseLock(lockKey, lockValue)
+    if (released) {
+      this.logger.debug(`Query lock released for ${lockKey}`)
     } else {
-      this.logger.debug(
-        `Lock ${lockKey} not owned by job ${jobId}, skipping release`,
-      )
+      this.logger.debug(`Lock ${lockKey} not owned, skipping release`)
     }
   }
 }
