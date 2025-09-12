@@ -17,12 +17,14 @@ import {
   REQUESTS_STREAM,
   RESPONSES_STREAM,
   DLQ_STREAM,
+  QUERY_LOCK_TIMEOUT_SECONDS,
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from '../common/cache/cache.service'
 import { CacheManagerService } from '../common/cache/cache-manager.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
 import Redis from 'ioredis'
+import * as crypto from 'crypto'
 
 @Injectable()
 export class DanbooruService {
@@ -37,6 +39,11 @@ export class DanbooruService {
     private readonly cacheManagerService: CacheManagerService,
   ) {}
 
+  /**
+   * Enhanced processRequest with query-level locking for deduplication
+   * This method is called by the consumer after initial locking, but includes
+   * additional safety locking for direct calls or future refactoring.
+   */
   async processRequest(
     jobId: string,
     query: string,
@@ -47,11 +54,34 @@ export class DanbooruService {
       jobId,
     )
 
+    // Additional query-level locking for safety (uses same key as consumer)
+    const queryHash = crypto.createHash('sha256').update(query).digest('hex')
+    const lockKey = `lock:query:${queryHash}`
+
+    // Try to acquire lock - if already locked by consumer, this will fail quickly
+    const lockAcquired = await this.redis.set(
+      lockKey,
+      jobId,
+      'EX',
+      QUERY_LOCK_TIMEOUT_SECONDS,
+      'NX',
+    ) === 'OK'
+
+    if (!lockAcquired) {
+      this.logger.warn(`Additional query lock not acquired for job ${jobId} (already processing)`, jobId)
+      const error: DanbooruErrorResponse = {
+        type: 'error',
+        jobId,
+        error: 'Query is currently being processed',
+      }
+      await this.publishResponse(jobId, error)
+      return error
+    }
+
     try {
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
 
-      // Use extracted DTO from validation (but since processRequest doesn't have jobData, adjust to use parameters and call validation separately if needed)
-      // For now, assume validation done in consumer, here start from rate limit
+      // Rate limiting check
       const rateCheck = await this.rateLimitManagerService.checkRateLimit(
         'danbooru',
         jobId,
@@ -62,7 +92,7 @@ export class DanbooruService {
         return rateCheck.error
       }
 
-      // Direct cache check using CacheService for compatibility
+      // Cache check
       let responseOrNull: DanbooruSuccessResponse | null = null
       if (!random) {
         responseOrNull =
@@ -99,7 +129,7 @@ export class DanbooruService {
       const responseData = this.buildSuccessResponse(post, jobId)
       await this.publishResponse(jobId, responseData)
 
-      // Direct cache set using CacheService for compatibility
+      // Cache the successful response
       if (!random) {
         await this.cacheService.setCache(
           'danbooru',
@@ -110,8 +140,13 @@ export class DanbooruService {
       }
 
       return responseData
-    } catch (error: unknown) {
-      return await this.handleProcessingError(error, jobId, query)
+    } finally {
+      // Always release the query lock if we acquired it
+      const currentLockValue = await this.redis.get(lockKey)
+      if (currentLockValue === jobId) {
+        await this.redis.del(lockKey)
+        this.logger.debug(`Service-level query lock released for ${lockKey} by job ${jobId}`)
+      }
     }
   }
 
@@ -183,4 +218,32 @@ export class DanbooruService {
     await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
     return errorData
   }
+
+  /**
+   * DEDUPLICATION STRATEGY DOCUMENTATION:
+   *
+   * This service implements a multi-layered deduplication approach:
+   *
+   * 1. CONSUMER LEVEL (redis-stream.consumer.ts):
+   *    - DLQ Duplicate Check: Scans recent DLQ entries for identical queries within 1 hour
+   *    - Query Hash Locking: Uses Redis SET NX with 5-minute TTL to prevent concurrent processing
+   *    - Server-side Job ID: Generates UUID to prevent client-side ID collisions
+   *    - Job-level Deduplication: Final SET NX check as safety net
+   *
+   * 2. SERVICE LEVEL (this file):
+   *    - Additional Query Locking: Double-checks lock acquisition for safety against direct calls
+   *    - Graceful Lock Release: Ensures locks are released even on errors via try/finally
+   *
+   * 3. DLQ PREVENTION (dlq.util.ts):
+   *    - dedupCheck(): Scans DLQ stream for recent failures before adding new entries
+   *    - Time Window: Configurable 1-hour deduplication window via DLQ_DEDUP_WINDOW_SECONDS
+   *
+   * LOCK KEYS: `lock:query:{sha256(query)}` - 5 minutes TTL (QUERY_LOCK_TIMEOUT_SECONDS)
+   * PROCESSED KEYS: `processed:{jobId}` - 24 hours TTL (DEDUP_TTL_SECONDS)
+   * DLQ DEDUP WINDOW: 1 hour (DLQ_DEDUP_WINDOW_SECONDS)
+   *
+   * This comprehensive strategy prevents duplicate API calls to Danbooru while handling
+   * race conditions, ensuring failed requests don't spam the DLQ with identical queries,
+   * and providing robust protection against concurrent processing.
+   */
 }
