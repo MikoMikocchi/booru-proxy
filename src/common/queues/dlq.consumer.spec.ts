@@ -78,7 +78,7 @@ describe('DlqConsumer', () => {
     it('should return when no entries in stream', async () => {
       mockRedis.xread.mockResolvedValue(null)
 
-      await consumer['processDLQ']()
+      await consumer['processDLQ']('danbooru')
 
       expect(mockRedis.xread).toHaveBeenCalledWith(
         'BLOCK',
@@ -112,15 +112,15 @@ describe('DlqConsumer', () => {
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
 
-      await consumer['processDLQ']()
+      await consumer['processDLQ']('danbooru')
 
-      expect(dlqUtil.retryFromDLQ).toHaveBeenCalledWith(
+      expect(dlqUtil.moveToDeadQueue).toHaveBeenCalledWith(
         mockRedis,
-        apiName,
+        'danbooru',
         'test-job-123',
-        'rare:tag',
-        0,
-        streamId,
+        'No posts found',
+        'a1b2c3d4e5f6', // hash
+        'API returned empty',
       )
     })
 
@@ -145,7 +145,7 @@ describe('DlqConsumer', () => {
       const xdelError = new Error('XDEL failed')
       mockRedis.xdel.mockRejectedValue(xdelError)
 
-      await consumer['processDLQ']()
+      await consumer['processDLQ']('danbooru')
 
       expect(consumer['logger'].error).toHaveBeenCalled()
     })

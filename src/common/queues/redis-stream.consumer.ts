@@ -47,6 +47,130 @@ export class RedisStreamConsumer
   }
 
   /**
+   * Validate incoming job message using ValidationService and DTO
+   * @param data - Job data containing query, clientId, apiPrefix
+   * @param apiPrefix - API prefix for validation context
+   * @param jobId - Job identifier for logging
+   * @returns Validation result with error if invalid
+   */
+  private async validateMessage(
+    data: { query: string; clientId?: string; apiPrefix?: string },
+    apiPrefix: string,
+    jobId: string
+  ): Promise<{ valid: boolean; error?: any }> {
+    try {
+      // Ensure apiPrefix is set in validation config
+      const validationData = { ...data, apiPrefix };
+      const validation = await this.validationService.validateRequest(validationData);
+      
+      if (!validation.valid) {
+        const queryHash = crypto.createHash('sha256').update(data.query).digest('hex').slice(0, 8);
+        this.logger.warn(
+          `Validation failed for job ${jobId} (${apiPrefix}): ${validation.error.error} (query hash: ${queryHash})`,
+          jobId,
+        );
+        return { valid: false, error: validation.error };
+      }
+      
+      return { valid: true, error: null };
+    } catch (error) {
+      this.logger.error(`Validation service error for job ${jobId} (${apiPrefix}): ${error.message}`, jobId);
+      return {
+        valid: false,
+        error: {
+          type: 'error',
+          jobId,
+          error: 'Validation service unavailable',
+          code: 'VALIDATION_ERROR',
+          apiPrefix
+        }
+      };
+    }
+  }
+
+  /**
+   * Perform deduplication check using DLQ utility with apiPrefix support
+   * @param apiPrefix - API prefix for stream identification
+   * @param query - Query string to check for duplicates
+   * @param jobId - Job identifier for cross-job deduplication
+   * @returns True if duplicate found, false otherwise
+   */
+  private async dedupCheck(
+    apiPrefix: string,
+    query: string,
+    jobId: string
+  ): Promise<boolean> {
+    try {
+      const hasDuplicate = await dedupCheck(this.redis, apiPrefix, query, jobId);
+      if (hasDuplicate) {
+        const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
+        this.logger.debug(`DLQ duplicate detected for ${apiPrefix} job ${jobId} (query hash: ${queryHash})`);
+      }
+      return hasDuplicate;
+    } catch (error) {
+      this.logger.error(`Dedup check failed for ${apiPrefix} job ${jobId}: ${error.message}`, jobId);
+      return false; // Allow processing if dedup check fails to avoid blocking
+    }
+  }
+
+  /**
+   * Process job using appropriate API service with cache invalidation
+   * @param jobId - Job identifier
+   * @param query - Query string
+   * @param clientId - Optional client identifier
+   * @param apiPrefix - API prefix to determine service
+   * @returns Promise that resolves when processing completes
+   */
+  private async processJob(
+    jobId: string,
+    query: string,
+    clientId?: string,
+    apiPrefix: string = 'danbooru'
+  ): Promise<void> {
+    try {
+      // Get the appropriate service based on apiPrefix
+      let apiService: any;
+      switch (apiPrefix.toLowerCase()) {
+        case 'danbooru':
+          if (!this.danbooruService) {
+            this.danbooruService = this.moduleRef.get(DanbooruService, { strict: false });
+          }
+          apiService = this.danbooruService;
+          break;
+        // Add more API services here as they are implemented
+        default:
+          const errorMsg = `Unsupported API provider: ${apiPrefix}`;
+          this.logger.error(errorMsg, jobId);
+          throw new Error(errorMsg);
+      }
+
+      if (!apiService) {
+        throw new Error(`API service not available for ${apiPrefix}`);
+      }
+
+      // Process the request using the API service
+      const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
+      this.logger.debug(`Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`);
+      
+      await apiService.processRequest(jobId, query, clientId);
+      
+      // Invalidate related caches after successful processing (if service supports it)
+      if (apiService.invalidateCache) {
+        const invalidated = await apiService.invalidateCache(apiPrefix, query, true); // Assume random=true
+        this.logger.debug(`Invalidated ${invalidated} cache entries for ${apiPrefix} job ${jobId}`);
+      }
+      
+    } catch (error) {
+      const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
+      this.logger.error(
+        `Job processing failed for ${apiPrefix} job ${jobId} (query hash: ${queryHash}): ${error.message}`,
+        jobId
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Enhanced job processing with multi-level deduplication:
    * 1. DLQ duplicate check for recent failures
    * 2. Query-level locking to prevent concurrent processing
