@@ -16,9 +16,8 @@ export class CreateRequestDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(100)
-  @Matches(/^[a-zA-Z0-9_][a-zA-Z0-9_ \-,:()]{0,99}$/i, {
-    message:
-      'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags), no negation (~) or other specials, starting with alphanumeric or underscore, max 100 chars',
+  @Matches(/^[\w\s\-,:()]{1,100}$/i, {
+    message: 'Query: alphanumeric, spaces, hyphens, colons, parentheses only, max 100 chars',
   })
   query: string
 
