@@ -23,6 +23,7 @@ A robust NestJS microservice acting as a proxy and worker for the Danbooru image
 The application is a pure NestJS microservice (no HTTP controllers) bootstrapped in [`src/main.ts`](src/main.ts) with Redis transport (ioredis client, TLS optional), global validation pipes, and graceful shutdown (Redis cleanup).
 
 ### Core Modules
+
 - **AppModule** ([`src/app.module.ts`](src/app.module.ts)): Root; imports ConfigModule (global env), SharedModule (utilities), DanbooruModule (business logic).
 - **SharedModule** ([`src/common/shared.module.ts`](src/common/shared.module.ts)): Exports globals:
   - **CacheModule** ([`src/common/cache/cache.module.ts`](src/common/cache/cache.module.ts)): Backend switcher (Redis/Memcached), CacheService for get/set/invalidate.
@@ -33,6 +34,7 @@ The application is a pure NestJS microservice (no HTTP controllers) bootstrapped
 - **DanbooruModule** ([`src/danbooru/danbooru.module.ts`](src/danbooru/danbooru.module.ts)): Core; imports above, provides DanbooruService (orchestrator: lock/cache/rate/API/publish), DanbooruApiService (axios client), ValidationService.
 
 ### Key Services & Flow
+
 1. Producer: XADD to `danbooru:requests` with jobId, query, apiKey (HMAC), clientId.
 2. RedisStreamConsumer: Validates DTO, dedups, acquires lock → Delegates to DanbooruService.
 3. DanbooruService: Rate check → Cache getOrSet (deterministic seed for random) → API call (via DanbooruApiService, extends BaseApiService) → Publish success/error to `danbooru:responses`, cache/invalidate, add to DLQ if failed.
@@ -50,128 +52,213 @@ Utilities: Constants ([`src/common/constants.ts`](src/common/constants.ts)) for 
 
 Optional: Memcached server for caching backend.
 
-## Setup Instructions
+## Quick Setup
 
 1. Clone the repo:
+
+```
+git clone https://github.com/MikoMikocchi/booru-proxy.git
+cd booru-proxy
+```
+
+2. Run automated setup:
+
+- For development (non-TLS Redis): `npm run setup:dev`
+- For production (TLS Redis): `npm run setup:prod`
+
+This single command handles:
+
+- Installing dependencies (`npm install`)
+- Prompting for Danbooru credentials (login/API key) if not already set in environment variables
+- Generating secure secrets: Redis password (32 hex), API secret (64 hex), encryption key (64 hex for AES-256)
+- Creating `./secrets/redis_password.txt` and storing secrets securely
+- Copying and templating `.env` from `.env.example` with placeholders replaced (e.g., `${REDIS_PASSWORD}` → actual value)
+- Setting mode-specific defaults: `REDIS_USE_TLS=false` (dev) / `true` (prod); `REDIS_URL=redis://...` (dev) / `rediss://...` (prod)
+- Generating self-signed TLS certificates in `./certs/redis/` (prod only) using OpenSSL (4096-bit, 365 days)
+- Starting Redis:
+  - Dev: Non-TLS Docker container on port 6379 with password
+  - Prod: TLS-enabled via `docker-compose up -d --build redis` on port 6380
+- Launching the worker:
+  - Dev: `npm run start:dev` (watches for changes)
+  - Prod: `docker-compose up -d --build danbooru-worker`
+- Verification: Redis PING, unit tests (`npm test`), E2E tests (`npm run test:e2e`), and queue test command example
+
+3. **Cross-Platform Notes**:
+
+- macOS/Linux: Native Bash support.
+- Windows: Use WSL (Windows Subsystem for Linux) or Git Bash; ensure Docker Desktop is running. OpenSSL must be available (install via `apt install openssl` in WSL).
+- No external dependencies beyond Node.js, npm, Docker, and OpenSSL/envsubst (GNU gettext; install if needed: `brew install gettext` on macOS).
+
+## Verification
+
+After setup, verify the system is operational:
+
+1. **Redis Health Check**:
+   - Dev: `docker exec redis-dev redis-cli -a $REDIS_PASSWORD PING` (expect "PONG")
+   - Prod: `docker-compose exec redis redis-cli -a $REDIS_PASSWORD --tls --cacert ./certs/redis/ca.crt --cert ./certs/redis/redis-client.crt --key ./certs/redis/redis-client.key -p 6380 PING` (expect "PONG")
+
+   If fails, check Docker logs: `docker logs redis-dev` (dev) or `docker-compose logs redis` (prod).
+
+2. **Run Tests**:
+
    ```
-   git clone <repo-url> danbooru-gateway
-   cd danbooru-gateway
+   npm test  # Unit tests
+   npm run test:e2e  # E2E tests (uses testcontainers for isolated Redis)
    ```
 
-2. Install dependencies:
-   ```
-   npm install
-   ```
+   Ensure 100% pass; coverage in `./coverage/`.
 
-3. Configure environment: Copy [`.env.example`](.env.example) to `.env` and edit:
-   ```
-   DANBOORU_LOGIN=your_danbooru_username
-   DANBOORU_API_KEY=your_danbooru_api_key
-   REDIS_URL=redis://localhost:6379  # Dev; use rediss:// for TLS prod
-   REDIS_PASSWORD=your_redis_password  # For Docker
-   REDIS_USE_TLS=false  # true for prod
-   REDIS_TLS_CA=/path/to/ca.pem  # Optional PEM paths for TLS
-   REDIS_TLS_CERT=/path/to/cert.pem
-   REDIS_TLS_KEY=/path/to/key.pem
-   API_SECRET=your_shared_hmac_secret  # For apiKey validation
-   ENCRYPTION_KEY=your_64_hex_aes_key  # Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   RATE_LIMIT_PER_MINUTE=60
-   CACHE_TTL_SECONDS=3600
-   CACHE_BACKEND=redis  # or memcached
-   DANBOORU_LIMIT=1  # Default query limit
-   DANBOORU_RANDOM=true  # Enable random selection
-   LOG_LEVEL=info
-   ```
+3. **Queue Example** (Test end-to-end flow):
+   - Submit request (replace placeholders):
 
-4. **Docker Setup (Recommended)**: Starts Redis 8.2-alpine with TLS (port 6380), append-only mode, and password from `./secrets/redis_password.txt` (create if needed).
-   ```
-   mkdir -p secrets && echo "your_redis_password" > secrets/redis_password.txt
-   docker-compose up --build  # Or -d for detached
-   ```
-   Mount TLS certs if using prod Redis. Healthchecks ensure readiness.
+     ```
+     # Dev (non-TLS)
+     redis-cli -a $REDIS_PASSWORD XADD danbooru:requests '*' jobId $(uuidgen) query 'cat_ears rating:s' apiKey 'your_hmac_placeholder' clientId 'test-client'
 
-5. **Local Development** (without Docker):
-   - Start Redis: `./scripts/redis-start.sh` or `docker run -d -p 6379:6379 --name redis -e REDIS_PASSWORD=pass redis:alpine`
-   - Run service: `npm run start:dev` (watches TS changes)
-   - Debug: `npm run start:debug`
-   - Production build: `npm run build && npm run start:prod`
+     # Prod (TLS)
+     redis-cli -a $REDIS_PASSWORD --tls --cacert ./certs/redis/ca.crt --cert ./certs/redis/redis-client.crt --key ./certs/redis/redis-client.key -p 6380 XADD danbooru:requests '*' jobId $(uuidgen) query 'cat_ears rating:s' apiKey 'your_hmac_placeholder' clientId 'test-client'
+     ```
 
-Lint: `npm run lint`, Format: `npm run format`.
+     (Generate real `apiKey` via HMAC: `crypto.createHmac('sha256', process.env.API_SECRET).update(jobId + query).digest('hex')`)
+
+   - Read response (in another terminal; use `xread BLOCK 0` for live polling):
+
+     ```
+     # Dev
+     redis-cli -a $REDIS_PASSWORD XREAD BLOCK 5000 STREAMS danbooru:responses 0
+
+     # Prod (TLS)
+     redis-cli -a $REDIS_PASSWORD --tls --cacert ./certs/redis/ca.crt --cert ./certs/redis/redis-client.crt --key ./certs/redis/redis-client.key -p 6380 XREAD BLOCK 5000 STREAMS danbooru:responses 0
+     ```
+
+     Expect JSON response with `type: "success"` or `"error"`, including image metadata.
+
+## Troubleshooting
+
+- **Docker Issues**: Ensure Docker Desktop is running (`docker ps`). If "no space left", prune: `docker system prune -f`.
+- **OpenSSL Not Found**: Install OpenSSL (macOS: `brew install openssl`; Linux: `apt install openssl`).
+- **envsubst Missing** (for .env templating): Install GNU gettext (`brew install gettext` on macOS; add to PATH if needed).
+- **Danbooru Credentials Invalid**: Re-run `npm run setup:dev` and enter valid login/API key from [Danbooru](https://danbooru.donmai.us/wiki_pages/api).
+- **Redis Connection Fails**: Check `REDIS_URL` in `.env`; verify password in `./secrets/redis_password.txt`. For TLS, ensure cert paths match.
+- **Worker Crashes**: View logs: Dev (console); Prod (`docker-compose logs danbooru-worker`). Common: Missing env vars or Redis down.
+- **Tests Fail**: Ensure Redis is running before tests. Use `npm run test:debug` for breakpoints.
+- **Windows Compatibility**: Prefer WSL; avoid native CMD (use `wsl.exe` for scripts). If cert gen fails, run OpenSSL manually.
+- **Permissions**: Ensure `./scripts/*.sh` are executable: `chmod +x scripts/*.sh`.
+
+If issues persist, check Docker logs and share error output.
+
+## Stop and Cleanup
+
+- **Development**:
+
+  ```
+  # Stop worker (Ctrl+C in terminal)
+  docker stop redis-dev && docker rm redis-dev
+  # Optional: docker rmi redis:alpine
+  ```
+
+- **Production**:
+
+  ```
+  docker-compose down  # Stops and removes containers
+  docker-compose down -v  # Also removes volumes (data loss)
+  ```
+
+- **Full Cleanup** (dev/prod):
+  ```
+  rm -rf secrets/ certs/ .env  # Regenerate on next setup
+  docker volume prune -f  # Remove unused volumes
+  ```
 
 ## Usage
 
-Interact via Redis streams (no HTTP endpoints). Use a Redis client like ioredis.
+Interact via Redis streams. Use a Redis client like ioredis.
 
 ### Submitting Requests
 
 Add to input stream (`danbooru:requests`):
-```javascript
-const Redis = require('ioredis');
-const crypto = require('crypto');
-const redis = new Redis(process.env.REDIS_URL);
 
-const jobId = crypto.randomUUID();
-const query = 'cat_ears rating:safe';  // Danbooru tags
-const secret = process.env.API_SECRET;
-const apiKey = crypto.createHmac('sha256', secret).update(jobId + query).digest('hex');
-const clientId = 'optional-client-id';  // Alphanumeric, max 50 chars
+```javascript
+const Redis = require('ioredis')
+const crypto = require('crypto')
+const redis = new Redis(process.env.REDIS_URL)
+
+const jobId = crypto.randomUUID()
+const query = 'cat_ears rating:safe' // Danbooru tags
+const secret = process.env.API_SECRET
+const apiKey = crypto
+  .createHmac('sha256', secret)
+  .update(jobId + query)
+  .digest('hex')
+const clientId = 'optional-client-id' // Alphanumeric, max 50 chars
 
 await redis.xadd('danbooru:requests', '*', {
   jobId,
   query,
   apiKey,
-  clientId
-});
+  clientId,
+})
 ```
 
-- **Validation**: Query (≤100 chars: alphanumeric, spaces, -, :, (), _); apiKey HMAC match; jobId UUID.
+- **Validation**: Query (≤100 chars: alphanumeric, spaces, -, :, (), \_); apiKey HMAC match; jobId UUID.
 - Limit/random: Fixed via env (default 1/true); query supports directives like `rating:s`.
 
 ### Reading Responses
 
 Consume from output stream (`danbooru:responses`):
+
 ```javascript
-const stream = await redis.xread('BLOCK', 0, 'STREAMS', 'danbooru:responses', '0');
+const stream = await redis.xread(
+  'BLOCK',
+  0,
+  'STREAMS',
+  'danbooru:responses',
+  '0',
+)
 
 for (const [streamName, messages] of stream) {
   for (const [id, fields] of messages) {
-    const response = JSON.parse(fields.data || '{}');  // Fields as key-value
-    console.log(response);
+    const response = JSON.parse(fields.data || '{}') // Fields as key-value
+    console.log(response)
     // Ack: await redis.xack('danbooru:responses', 'group', id);  // If using groups
   }
 }
 ```
 
 **Success Response** (DanbooruSuccessResponse):
+
 ```json
 {
   "type": "success",
   "jobId": "uuid-v4",
   "imageUrl": "https://danbooru.donmai.us/data/...",
-  "author": "artist_name",  // Or null
-  "tags": "cat_ears solo rating:s",  // tag_string_general
-  "rating": "s",  // 's', 'q', 'e'
-  "source": "https://...",  // Or null
-  "copyright": "character_name",  // Or null
+  "author": "artist_name", // Or null
+  "tags": "cat_ears solo rating:s", // tag_string_general
+  "rating": "s", // 's', 'q', 'e'
+  "source": "https://...", // Or null
+  "copyright": "character_name", // Or null
   "timestamp": "2025-09-12T19:49:20Z"
 }
 ```
 
 **Error Response** (DanbooruErrorResponse):
+
 ```json
 {
   "type": "error",
   "jobId": "uuid-v4",
-  "error": "No posts found",  // Or "Rate limit exceeded", etc.
+  "error": "No posts found", // Or "Rate limit exceeded", etc.
   "timestamp": "2025-09-12T19:49:20Z"
 }
 ```
 
 ### Monitoring DLQ/Dead Queue
+
 - DLQ (`danbooru:dlq`): Encrypted entries with query hash, error, retryCount.
 - Dead (`danbooru-dead`): Permanent failures.
+
 ```javascript
-await redis.xread('BLOCK', 5000, 'STREAMS', 'danbooru:dlq', '0');  // Poll every 5s
+await redis.xread('BLOCK', 5000, 'STREAMS', 'danbooru:dlq', '0') // Poll every 5s
 ```
 
 Scale: Run multiple instances for higher throughput; locks ensure consistency.
@@ -179,33 +266,42 @@ Scale: Run multiple instances for higher throughput; locks ensure consistency.
 ## API Details
 
 ### Request DTO (CreateRequestDto)
+
 ```typescript
-import { IsUUID, IsString, IsOptional, MaxLength, Matches } from 'class-validator';
+import {
+  IsUUID,
+  IsString,
+  IsOptional,
+  MaxLength,
+  Matches,
+} from 'class-validator'
 
 export class CreateRequestDto {
   @IsUUID()
-  jobId: string;
+  jobId: string
 
   @IsString()
   @MaxLength(100)
-  @Matches(/^[a-zA-Z0-9\s\-_:()]+$/)  // Safe chars
-  query: string;
+  @Matches(/^[a-zA-Z0-9\s\-_:()]+$/) // Safe chars
+  query: string
 
   @IsString()
-  apiKey: string;  // HMAC validated separately
+  apiKey: string // HMAC validated separately
 
   @IsOptional()
   @IsString()
   @MaxLength(50)
   @Matches(/^[a-zA-Z0-9\-_]+$/)
-  clientId?: string;
+  clientId?: string
 }
 ```
 
 ### Response DTO (DanbooruPost)
+
 Maps Danbooru fields: id, file_url (validated URL), large_file_url, tags (lowercase/trimmed/safe), rating (enum), score, created_at (Date), tag_string_artist/general/copyright, source (sanitized).
 
 Query Examples:
+
 - Safe cats: `query: "cat_ears rating:s"`
 - Random explicit: `query: "1girl rating:e"` (with DANBOORU_RANDOM=true)
 - Artist: `query: "artist:drawr"`
@@ -215,10 +311,12 @@ See [`src/danbooru/interfaces/danbooru.interface.ts`](src/danbooru/interfaces/da
 ## Testing
 
 - **Unit Tests**: Jest for services/consumers (mocks: ioredis-mock, nock for HTTP).
+
   ```
   npm run test  # Or npm run test:watch
   npm run test:cov  # Coverage
   ```
+
   Specs: danbooru.service.spec.ts (processing), cache.service.spec.ts, dlq.consumer.spec.ts, etc.
 
 - **E2E Tests**: Supertest + testcontainers (Docker Redis isolation).
@@ -232,6 +330,7 @@ Debug: `npm run test:debug`.
 ## Dependencies
 
 **Production**:
+
 - NestJS: @nestjs/core@11.0.1, @nestjs/microservices@11.1.6, @nestjs/cache-manager@3.0.1, @nestjs/throttler@6.4.0, @nestjs/bullmq@11.0.3
 - Redis: ioredis@5.7.0, bullmq@5.58.5
 - HTTP: axios@1.11.0, axios-retry@4.5.0
@@ -239,6 +338,7 @@ Debug: `npm run test:debug`.
 - Types: @types/node@22.10.7
 
 **Development**:
+
 - Jest@30.0.0, ts-jest@29.2.5, supertest@7.0.0, nock@14.0.10, testcontainers@11.5.1
 - Build: typescript@5.7.3, eslint@9.18.0, prettier@3.4.2
 

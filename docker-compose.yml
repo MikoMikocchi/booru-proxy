@@ -1,21 +1,38 @@
+env_file:
+  - .env
+
 services:
   redis:
     image: redis:8.2-alpine
     restart: unless-stopped
-    entrypoint: ["/scripts/redis-start.sh"]
     ports:
-      - "6379:6379"
       - "6380:6380"
     volumes:
       - redis_data:/data
       - ./certs/redis:/certs/redis:ro
-      - ./scripts/redis-start.sh:/scripts/redis-start.sh:ro
-    secrets:
-      - redis_password
+      - ./secrets/redis_password.txt:/run/secrets/redis_password:ro
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     command: >-
-      redis-server --port 6379 --tls-port 6380 --tls-cert-file /certs/redis/redis.crt --tls-key-file /certs/redis/redis.key --tls-ca-cert-file /certs/redis/ca.crt --requirepass ""
+      sh -c "
+        redis-server \
+          --port 0 \
+          --tls-port 6380 \
+          --tls-cert-file /certs/redis/redis.crt \
+          --tls-key-file /certs/redis/redis.key \
+          --tls-ca-cert-file /certs/redis/ca.crt \
+          --requirepass ${REDIS_PASSWORD} \
+          --appendonly yes \
+          --dir /data \
+          &
+        PID=$$!
+        sleep 10
+        redis-cli --tls --cacert /certs/redis/ca.crt --cert /certs/redis/redis-client.crt --key /certs/redis/redis-client.key -p 6380 \
+          ACL SETUSER default on >${REDIS_PASSWORD} ~* +@all
+        wait $$!
+      "
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --user default -a $(cat /run/secrets/redis_password | sed -n '1p') --tls --cacert /certs/redis/ca.crt --cert /certs/redis/client.crt --key /certs/redis/client.key -h localhost -p 6380 PING"]
+      test: ["CMD-SHELL", "redis-cli --user default -a ${REDIS_PASSWORD} --tls --cacert /certs/redis/ca.crt --cert /certs/redis/redis-client.crt --key /certs/redis/redis-client.key -h localhost -p 6380 PING"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,30 +40,21 @@ services:
 
   danbooru-worker:
     build: .
-    command: >-
-      sh -c "export REDIS_PASSWORD=$$(cat /run/secrets/redis_password | sed -n '1p') && export REDIS_USE_TLS=true && export REDIS_URL=\"rediss://default:\$REDIS_PASSWORD@redis:6380\" && npm run start:prod"
+    command: npm run start:prod
     restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
     environment:
       - REDIS_USE_TLS=true
-      - DANBOORU_LOGIN=${DANBOORU_LOGIN}
-      - DANBOORU_API_KEY=${DANBOORU_API_KEY}
-      - RATE_LIMIT_PER_MINUTE=60
-      - CACHE_TTL_SECONDS=3600
-      - DANBOORU_LIMIT=1
-      - DANBOORU_RANDOM=true
-      - API_SECRET=${API_SECRET}
+      - REDIS_URL=rediss://default:${REDIS_PASSWORD}@redis:6380
       - REDIS_TLS_CA=/app/certs/redis/ca.crt
-      - REDIS_TLS_CERT=/app/certs/redis/client.crt
-      - REDIS_TLS_KEY=/app/certs/redis/client.key
+      - REDIS_TLS_CERT=/app/certs/redis/redis-client.crt
+      - REDIS_TLS_KEY=/app/certs/redis/redis-client.key
     volumes:
       - ./certs/redis:/app/certs/redis:ro
-    secrets:
-      - redis_password
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -h redis -u default -a $(cat /run/secrets/redis_password | sed -n '1p') --tls --cacert /app/certs/redis/ca.crt --cert /app/certs/redis/client.crt --key /app/certs/redis/client.key -p 6380 ping || exit 1"]
+      test: ["CMD-SHELL", "redis-cli -h redis --user default -a ${REDIS_PASSWORD} --tls --cacert /app/certs/redis/ca.crt --cert /app/certs/redis/redis-client.crt --key /app/certs/redis/redis-client.key -p 6380 ping || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,6 +63,3 @@ services:
 volumes:
   redis_data:
 
-secrets:
-  redis_password:
-    file: ./secrets/redis_password.txt

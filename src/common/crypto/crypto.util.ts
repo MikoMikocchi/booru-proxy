@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
 const TAG_LENGTH = 16;
-const AAD = Buffer.from('danbooru-gateway'); // Associated Data for authenticity
+const AAD = Buffer.from('booru-proxy'); // Associated Data for authenticity
 
 /**
  * Encrypts plaintext using AES-256-GCM with a secret key.
