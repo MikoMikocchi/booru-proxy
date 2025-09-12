@@ -54,16 +54,15 @@ async function bootstrap() {
     console.log('DEBUG: REDIS_URL raw=', redisUrlRaw)
     console.log('DEBUG: REDIS_USE_TLS=', useTls)
 
-    let redisUrl = redisUrlRaw
-    if (useTls) {
-      const baseUrl = redisUrl.replace(/^redis:/, 'rediss:')
-      const url = new URL(baseUrl)
-      const password = url.password || redisPassword || ''
-      redisUrl = url.username ? `rediss://${password}@${url.host}` : `rediss://:${password}@${url.host}`
-    }
-    console.log('DEBUG: Constructed REDIS_URL=', redisUrl)
+    // Always parse the raw URL (assumes redis:// protocol)
+    const parsedUrl = new URL(redisUrlRaw)
+    const host = parsedUrl.hostname
+    const port = Number(parsedUrl.port) || 6379
+    const username = parsedUrl.username || undefined
+    const password = parsedUrl.password || redisPassword || undefined
 
-    const url = new URL(redisUrl)
+    console.log('DEBUG: Parsed - host:', host, 'port:', port, 'username:', username, 'useTls:', useTls)
+
     let tlsConfig: any = undefined
     if (useTls) {
       const caPath = configService.get<string>('REDIS_TLS_CA')
@@ -107,12 +106,12 @@ async function bootstrap() {
       }
     }
 
-    // Create Redis client for shutdown using the same config
+    // Create Redis client for shutdown using the parsed config
     redisClient = new Redis({
-      host: url.hostname,
-      port: Number(url.port) || 6379,
-      password: url.password || undefined,
-      username: undefined,
+      host,
+      port,
+      username,
+      password,
       tls: tlsConfig,
       retryStrategy: (times: number) => {
         if (times > 10) {
@@ -125,10 +124,10 @@ async function bootstrap() {
     app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
       transport: Transport.REDIS,
       options: {
-        host: url.hostname,
-        port: Number(url.port) || 6379,
-        password: url.password || undefined,
-        username: url.username ? url.username : undefined,
+        host,
+        port,
+        username,
+        password,
         tls: tlsConfig,
         retryStrategy: (times: number) => {
           if (times > 10) {
