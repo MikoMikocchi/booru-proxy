@@ -3,27 +3,25 @@ import { CacheService, CacheableResponse } from './cache.service'
 import { ConfigService } from '@nestjs/config'
 import { Logger } from '@nestjs/common'
 
-jest.mock('ioredis')
-const RedisMock = require('ioredis')
-
 describe('CacheService', () => {
   let service: CacheService
-  let mockRedis: jest.Mocked<any>
   let configService: jest.Mocked<ConfigService>
   let mockLogger: jest.Mocked<Logger>
+  let mockBackend: any
 
   beforeEach(async () => {
-    mockRedis = {
+    mockBackend = {
       get: jest.fn(),
       setex: jest.fn(),
       del: jest.fn(),
       keys: jest.fn(),
-      ping: jest.fn().mockResolvedValue('PONG'),
       pipeline: jest.fn().mockReturnValue({
         del: jest.fn().mockReturnThis(),
         exec: jest.fn(),
       }),
-    } as any
+      invalidate: jest.fn().mockResolvedValue(0),
+      getStats: jest.fn().mockResolvedValue({ hit: 0, miss: 0 }),
+    }
 
     configService = {
       get: jest.fn(),
@@ -37,22 +35,11 @@ describe('CacheService', () => {
       verbose: jest.fn(),
     } as any
 
-    // Mock Redis instance
-    RedisMock.default.mockImplementation(() => mockRedis)
-
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         {
           provide: 'CACHE_BACKEND',
-          useValue: {
-            get: mockRedis.get,
-            setex: mockRedis.setex,
-            del: mockRedis.del,
-            keys: mockRedis.keys,
-            pipeline: mockRedis.pipeline,
-            invalidate: jest.fn().mockResolvedValue(0),
-            getStats: jest.fn().mockResolvedValue({ hit: 0, miss: 0 }),
-          },
+          useValue: mockBackend,
         },
         {
           provide: ConfigService,
@@ -80,14 +67,14 @@ describe('CacheService', () => {
       const query = 'cat'
       const random = false
       const mockData: CacheableResponse = { posts: [{ id: 1, tags: ['cat'] }] }
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+      const cacheKey = 'cache:danbooru:posts:d077f244def8a70e5ea758bd8352fcd8'
       const cachedString = JSON.stringify(mockData)
 
-      ;(service as any).backend.get.mockResolvedValueOnce(cachedString)
+      mockBackend.get.mockResolvedValueOnce(cachedString)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
-      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
       expect(result).toEqual(mockData)
       expect(mockLogger.warn).not.toHaveBeenCalled()
     })
@@ -98,11 +85,11 @@ describe('CacheService', () => {
       const random = false
       const cacheKey = 'cache:danbooru:posts:06d80eb0c50b39939cb9c12a98c8034e'
 
-      ;(service as any).backend.get.mockResolvedValueOnce(null)
+      mockBackend.get.mockResolvedValueOnce(null)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
-      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
       expect(result).toBeNull()
     })
 
@@ -113,13 +100,13 @@ describe('CacheService', () => {
       const cacheKey = 'cache:danbooru:posts:5f4dcc3b5aa765d61d8327deb882cf99'
       const invalidJson = 'invalid json data'
 
-      ;(service as any).backend.get.mockResolvedValueOnce(invalidJson)
-      ;(service as any).backend.del.mockResolvedValueOnce(undefined)
+      mockBackend.get.mockResolvedValueOnce(invalidJson)
+      mockBackend.del.mockResolvedValueOnce(undefined)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
-      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
-      expect((service as any).backend.del).toHaveBeenCalledWith(cacheKey)
+      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
+      expect(mockBackend.del).toHaveBeenCalledWith(cacheKey)
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Failed to parse cached data'),
       )
@@ -137,11 +124,7 @@ describe('CacheService', () => {
 
       await service.setCache(apiPrefix, query, mockData, random)
 
-      expect((service as any).backend.setex).toHaveBeenCalledWith(
-        cacheKey,
-        3600,
-        mockData,
-      )
+      expect(mockBackend.setex).toHaveBeenCalledWith(cacheKey, 3600, mockData)
       expect(mockLogger.debug).toHaveBeenCalledWith(
         expect.stringContaining('Cached response for danbooru'),
       )
@@ -155,9 +138,17 @@ describe('CacheService', () => {
       const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
       const customTtl = 1800
 
-      await service.setCache(apiPrefix, query, mockData, random, undefined, undefined, customTtl)
+      await service.setCache(
+        apiPrefix,
+        query,
+        mockData,
+        random,
+        undefined,
+        undefined,
+        customTtl,
+      )
 
-      expect((service as any).backend.setex).toHaveBeenCalledWith(
+      expect(mockBackend.setex).toHaveBeenCalledWith(
         cacheKey,
         customTtl,
         mockData,
@@ -174,7 +165,7 @@ describe('CacheService', () => {
 
       await service.deleteCache(apiPrefix, query, random)
 
-      expect((service as any).backend.del).toHaveBeenCalledWith(cacheKey)
+      expect(mockBackend.del).toHaveBeenCalledWith(cacheKey)
       expect(mockLogger.debug).toHaveBeenCalledWith(
         expect.stringContaining('Deleted cache for danbooru'),
       )
@@ -267,8 +258,17 @@ describe('CacheService', () => {
       const query = 'cat'
       const random = false
 
-      const keyWithLimit = (service as any).getCacheKey(apiPrefix, query, random, 50)
-      const keyWithoutLimit = (service as any).getCacheKey(apiPrefix, query, random)
+      const keyWithLimit = (service as any).getCacheKey(
+        apiPrefix,
+        query,
+        random,
+        50,
+      )
+      const keyWithoutLimit = (service as any).getCacheKey(
+        apiPrefix,
+        query,
+        random,
+      )
 
       expect(keyWithLimit).not.toBe(keyWithoutLimit)
       expect(keyWithLimit).toContain('limit:50')
@@ -280,8 +280,18 @@ describe('CacheService', () => {
       const random = false
       const tags = ['cat', 'dog']
 
-      const keyWithTags = (service as any).getCacheKey(apiPrefix, query, random, undefined, tags)
-      const keyWithoutTags = (service as any).getCacheKey(apiPrefix, query, random)
+      const keyWithTags = (service as any).getCacheKey(
+        apiPrefix,
+        query,
+        random,
+        undefined,
+        tags,
+      )
+      const keyWithoutTags = (service as any).getCacheKey(
+        apiPrefix,
+        query,
+        random,
+      )
 
       expect(keyWithTags).not.toBe(keyWithoutTags)
       expect(keyWithTags).toContain('tag:')
@@ -327,7 +337,9 @@ describe('CacheService', () => {
 
       expect(result).toEqual(mockData)
       expect(fetchFn).not.toHaveBeenCalled()
-      expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Cache hit'))
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        expect.stringContaining('Cache hit'),
+      )
     })
 
     it('should fetch and cache on miss', async () => {
@@ -340,9 +352,15 @@ describe('CacheService', () => {
       const result = await service.getOrFetch(key, fetchFn)
 
       expect((service as any).get).toHaveBeenCalledWith(key)
-      expect((service as any).setex).toHaveBeenCalledWith(key, 3600, JSON.stringify(freshData))
+      expect((service as any).setex).toHaveBeenCalledWith(
+        key,
+        3600,
+        JSON.stringify(freshData),
+      )
       expect(fetchFn).toHaveBeenCalledTimes(1)
-      expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Cache miss'))
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        expect.stringContaining('Cache miss'),
+      )
       expect(result).toEqual(freshData)
     })
 
@@ -361,8 +379,14 @@ describe('CacheService', () => {
 
       expect((service as any).get).toHaveBeenCalledTimes(2)
       expect((service as any).del).toHaveBeenCalledWith(key)
-      expect((service as any).setex).toHaveBeenCalledWith(key, 3600, JSON.stringify(freshData))
-      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Invalid cached data'))
+      expect((service as any).setex).toHaveBeenCalledWith(
+        key,
+        3600,
+        JSON.stringify(freshData),
+      )
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid cached data'),
+      )
       expect(result).toEqual(freshData)
     })
   })
@@ -413,9 +437,15 @@ describe('CacheService', () => {
       const memcachedService = memcachedModule.get<CacheService>(CacheService)
       ;(memcachedService as any).backend.get.mockResolvedValueOnce(mockData)
 
-      const result = await memcachedService.getCachedResponse(apiPrefix, query, random)
+      const result = await memcachedService.getCachedResponse(
+        apiPrefix,
+        query,
+        random,
+      )
 
-      expect((memcachedService as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect((memcachedService as any).backend.get).toHaveBeenCalledWith(
+        cacheKey,
+      )
       expect(result).toEqual(mockData)
     })
 
@@ -441,23 +471,27 @@ describe('CacheService', () => {
       const limit = 20
       const tags = ['safe', 'anime']
       const mockData: CacheableResponse = {
-        posts: [{ id: 1, score: 100, tags: tags }]
+        posts: [{ id: 1, score: 100, tags: tags }],
       }
       const cacheKey = expect.stringMatching(
-        /^cache:gelbooru:posts:[a-f0-9]{32}:limit:20:random-seed:[a-f0-9]{16}:tag:[a-f0-9]{32}$/
+        /^cache:gelbooru:posts:[a-f0-9]{32}:limit:20:random-seed:[a-f0-9]{16}:tag:[a-f0-9]{32}$/,
       )
 
-      ;(service as any).backend.get.mockResolvedValueOnce(JSON.stringify(mockData))
+      ;(service as any).backend.get.mockResolvedValueOnce(
+        JSON.stringify(mockData),
+      )
 
       const result = await service.getCachedResponse<CacheableResponse>(
         apiPrefix,
         query,
         random,
         limit,
-        tags
+        tags,
       )
 
-      expect((service as any).backend.get).toHaveBeenCalledWith(expect.stringMatching(cacheKey))
+      expect((service as any).backend.get).toHaveBeenCalledWith(
+        expect.stringMatching(cacheKey),
+      )
       expect(result).toEqual(mockData)
       expect(result?.posts?.[0].tags).toEqual(expect.arrayContaining(tags))
     })
