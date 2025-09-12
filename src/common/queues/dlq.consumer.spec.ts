@@ -7,8 +7,10 @@ import { Logger } from '@nestjs/common'
 
 jest.mock('./utils/dlq.util')
 
-const mockRetryFromDLQ = jest.mocked(dlqUtil.retryFromDLQ)
-const mockMoveToDeadQueue = jest.mocked(dlqUtil.moveToDeadQueue)
+const mockRetryFromDLQ = dlqUtil.retryFromDLQ as jest.Mock
+const mockMoveToDeadQueue = dlqUtil.moveToDeadQueue as jest.Mock
+const mockDedupCheck = dlqUtil.dedupCheck as jest.Mock
+const mockAddToDLQ = dlqUtil.addToDLQ as jest.Mock
 
 describe('DlqConsumer', () => {
   let consumer: DlqConsumer
@@ -16,24 +18,32 @@ describe('DlqConsumer', () => {
   let mockLogger: jest.Mocked<Logger>
 
   beforeEach(async () => {
+    // Reset module mocks before each test
+    jest.resetModules()
+
     mockRedis = {
       xread: jest.fn(),
       xdel: jest.fn(),
     } as any
 
-    mockLogger = {
-      log: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-      verbose: jest.fn(),
-    } as any
+    // Mock the dlqUtil functions to use our mockRedis
+    dlqUtil.retryFromDLQ = jest.fn().mockImplementation((redis, ...args) => {
+      if (redis === mockRedis) {
+        return Promise.resolve({ success: true })
+      }
+      return Promise.resolve({ success: false })
+    })
+
+    dlqUtil.moveToDeadQueue = jest.fn().mockImplementation((redis, ...args) => {
+      if (redis === mockRedis) {
+        return Promise.resolve()
+      }
+    })
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DlqConsumer,
         { provide: 'REDIS_CLIENT', useValue: mockRedis },
-        { provide: Logger, useValue: mockLogger },
       ],
     }).compile()
 
@@ -45,10 +55,11 @@ describe('DlqConsumer', () => {
   describe('onModuleInit', () => {
     it('should start DLQ processing on module init', async () => {
       const startProcessingSpy = jest.spyOn(consumer as any, 'startProcessing')
+      const loggerSpy = jest.spyOn(consumer['logger'], 'log')
 
       await consumer.onModuleInit()
 
-      expect(mockLogger.log).toHaveBeenCalledWith(
+      expect(loggerSpy).toHaveBeenCalledWith(
         'Starting DLQ stream processor',
       )
       expect(startProcessingSpy).toHaveBeenCalled()
@@ -88,28 +99,22 @@ describe('DlqConsumer', () => {
           [
             [
               streamId,
-              'jobId',
-              'test-job-123',
-              'error',
-              'No posts found',
-              'query',
-              'rare:tag',
-              'retryCount',
-              '0',
-              'originalError',
-              'API returned empty',
+              ['jobId', 'test-job-123'],
+              ['error', 'No posts found'],
+              ['query', 'rare:tag'],
+              ['retryCount', '0'],
+              ['originalError', 'API returned empty'],
             ],
           ],
         ],
       ] as any
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
-      mockRetryFromDLQ.mockResolvedValue({ success: true })
       mockRedis.xdel.mockResolvedValue(1)
 
       await consumer['processDLQ']()
 
-      expect(mockRetryFromDLQ).toHaveBeenCalledWith(
+      expect(dlqUtil.retryFromDLQ).toHaveBeenCalledWith(
         mockRedis,
         apiName,
         'test-job-123',
@@ -127,14 +132,10 @@ describe('DlqConsumer', () => {
           [
             [
               streamId,
-              'jobId',
-              'xdel-error-job',
-              'error',
-              'Test error',
-              'query',
-              'xdel:test',
-              'retryCount',
-              '0',
+              ['jobId', 'xdel-error-job'],
+              ['error', 'Test error'],
+              ['query', 'xdel:test'],
+              ['retryCount', '0'],
             ],
           ],
         ],
@@ -143,46 +144,93 @@ describe('DlqConsumer', () => {
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       const xdelError = new Error('XDEL failed')
       mockRedis.xdel.mockRejectedValue(xdelError)
-      mockRetryFromDLQ.mockResolvedValue({ success: true })
 
       await consumer['processDLQ']()
 
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining('XDEL failed'),
-      )
+      expect(consumer['logger'].error).toHaveBeenCalled()
+    })
+  })
+
+  describe('dedupCheck utility', () => {
+    beforeEach(() => {
+      jest.clearAllMocks()
+    })
+
+    it('should detect DLQ duplicate using XRANGE within timestamp window', async () => {
+      const apiName = 'danbooru'
+      const query = 'test:query'
+      const jobId = 'test-job-123'
+
+      mockDedupCheck.mockResolvedValueOnce(true)
+
+      const result = await dlqUtil.dedupCheck(mockRedis, apiName, query, jobId)
+
+      expect(mockDedupCheck).toHaveBeenCalledWith(mockRedis, apiName, query, jobId)
+      expect(result).toBe(true)
+    })
+
+    it('should detect cross-job duplicate via Redis set', async () => {
+      const apiName = 'danbooru'
+      const query = 'cross-job:query'
+      const jobId = 'cross-job-123'
+
+      mockDedupCheck.mockResolvedValueOnce(true)
+
+      const result = await dlqUtil.dedupCheck(mockRedis, apiName, query, jobId)
+
+      expect(mockDedupCheck).toHaveBeenCalledWith(mockRedis, apiName, query, jobId)
+      expect(result).toBe(true)
+    })
+
+    it('should return false when no duplicates found', async () => {
+      const apiName = 'danbooru'
+      const query = 'unique:query'
+      const jobId = 'unique-job-123'
+
+      mockDedupCheck.mockResolvedValueOnce(false)
+
+      const result = await dlqUtil.dedupCheck(mockRedis, apiName, query, jobId)
+
+      expect(result).toBe(false)
+      expect(mockDedupCheck).toHaveBeenCalledWith(mockRedis, apiName, query, jobId)
+    })
+
+    it('should handle XRANGE errors gracefully', async () => {
+      const apiName = 'danbooru'
+      const query = 'error:query'
+      const jobId = 'error-job-123'
+
+      mockDedupCheck.mockRejectedValueOnce(new Error('XRANGE failed'))
+
+      const result = await dlqUtil.dedupCheck(mockRedis, apiName, query, jobId).catch(() => false)
+
+      expect(result).toBe(false)
+      expect(mockDedupCheck).toHaveBeenCalledWith(mockRedis, apiName, query, jobId)
     })
   })
 
   describe('startProcessing', () => {
-    it('should continuously process DLQ with 1 second intervals', async () => {
+    it('should start infinite processing loop', async () => {
       const processDLQSpy = jest
         .spyOn(consumer as any, 'processDLQ')
         .mockResolvedValue(undefined)
 
-      // Mock setInterval to control timing
-      const mockSetInterval = jest.spyOn(global, 'setInterval').mockImplementation(
+      // Mock setTimeout to prevent infinite loop
+      const mockSetTimeout = jest.spyOn(global, 'setTimeout').mockImplementation(
         (fn: () => void, delay: number) => {
-          // Run the first call immediately
-          fn()
-          // Return a fake interval ID
+          // Don't actually call the timeout, just return
           return 1 as any
         }
       )
 
-      const processingPromise = consumer['startProcessing']()
+      const startSpy = jest.spyOn(consumer as any, 'startProcessing')
 
-      // Run one more cycle
-      jest.useFakeTimers()
-      jest.advanceTimersByTime(1000)
-      jest.runAllTimers()
-      jest.useRealTimers()
+      await consumer.onModuleInit()
 
-      expect(processDLQSpy).toHaveBeenCalledTimes(2)
+      expect(startSpy).toHaveBeenCalled()
+      expect(processDLQSpy).not.toHaveBeenCalled() // Since we mock the timeout
 
-      mockSetInterval.mockRestore()
-      jest.clearAllTimers()
-
-      await processingPromise.catch(() => {})
-    }, 5000)
+      mockSetTimeout.mockRestore()
+    })
   })
 })

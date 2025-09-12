@@ -68,6 +68,7 @@ export class RedisStreamConsumer
       this.redis,
       'danbooru',
       query,
+      jobId,
     )
     if (hasRecentDlqDuplicate) {
       this.logger.warn(
@@ -157,6 +158,7 @@ export class RedisStreamConsumer
           this.redis,
           'danbooru',
           query,
+          jobId,
         )
         if (!hasValidationDlqDuplicate) {
           await addToDLQ(

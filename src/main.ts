@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core'
 import { MicroserviceOptions, Transport } from '@nestjs/microservices'
+import { ValidationPipe } from '@nestjs/common'
 import { AppModule } from './app.module'
 import { ConfigService } from '@nestjs/config'
 import { ModuleRef } from '@nestjs/core'
@@ -64,6 +65,14 @@ async function bootstrap() {
     })
 
     console.log('Microservice started (Redis streams)')
+
+    app.useGlobalPipes(new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
+    }))
 
     await app.listen()
 

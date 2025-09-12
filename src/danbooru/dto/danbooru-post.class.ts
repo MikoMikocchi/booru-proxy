@@ -4,16 +4,20 @@ import {
   IsOptional,
   IsEnum,
   IsDateString,
+  IsUrl,
   Min,
   MaxLength,
   Matches,
 } from 'class-validator'
+
+import { Type, Transform } from 'class-transformer'
 
 export class DanbooruPost {
   @IsNumber()
   id: number
 
   @IsString()
+  @IsUrl({}, { message: 'file_url must be a valid URL' })
   file_url: string
 
   @IsOptional()
@@ -27,6 +31,7 @@ export class DanbooruPost {
   @IsString()
   @MaxLength(1000)
   @Matches(/^[a-z0-9\s_,:()-]+$/, { message: 'Invalid tag characters' })
+  @Transform(({ value }) => value?.toLowerCase().trim())
   tag_string_general: string
 
   @IsOptional()
@@ -41,6 +46,7 @@ export class DanbooruPost {
 
   @IsOptional()
   @IsString()
+  @IsUrl({}, { message: 'source must be a valid URL' })
   source?: string
 
   @IsNumber()
@@ -48,5 +54,6 @@ export class DanbooruPost {
   score: number
 
   @IsDateString()
-  created_at: string
+  @Type(() => Date)
+  created_at: Date
 }
