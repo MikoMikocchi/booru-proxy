@@ -1,76 +1,112 @@
-import { Injectable, Logger, Inject } from '@nestjs/common'
-import { Processor, InjectQueue, WorkerHost } from '@nestjs/bullmq'
-import { Queue } from 'bullmq'
-import { Job } from 'bullmq'
+import { Injectable, Logger, Inject, OnModuleInit } from '@nestjs/common'
 import Redis from 'ioredis'
-import { MAX_DLQ_RETRIES } from '../../common/constants'
-import { moveToDeadQueue } from './utils/dlq.util'
+import { REQUESTS_STREAM, DLQ_STREAM, MAX_DLQ_RETRIES } from '../constants'
+import { retryFromDLQ, moveToDeadQueue } from './utils/dlq.util'
 
-@Processor('danbooru-dlq', { concurrency: 3 })
 @Injectable()
-export class DlqConsumer extends WorkerHost {
+export class DlqConsumer implements OnModuleInit {
   private readonly logger = new Logger(DlqConsumer.name)
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
-    @InjectQueue('danbooru-requests') private readonly mainQueue: Queue,
-  ) {
-    super()
+  ) {}
+
+  async onModuleInit() {
+    this.logger.log('Starting DLQ stream processor')
+    this.startProcessing()
   }
 
-  async process(
-    job: Job<{
-      jobId: string
-      error: string
-      query: string
-      retryCount: number
-      originalError?: string
-    }>,
-  ) {
-    const data = job.data
-    const { jobId, error, query, retryCount, originalError } = data
+  async processDLQ() {
+    const apiName = 'danbooru'
+    const dlqStream = `${apiName}-dlq`
 
-    this.logger.error(
-      `Processing DLQ job ${jobId}: error = ${error}, query = ${query}, retry = ${retryCount}/${MAX_DLQ_RETRIES}`,
-    )
-
-    const isRetryableError =
-      error.includes('No posts found') ||
-      error.includes('Rate limit') ||
-      error.includes('API error')
-
-    if (isRetryableError && retryCount < MAX_DLQ_RETRIES) {
-      // For retryable errors within limits, requeue with backoff
-      const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 60000)
-      this.logger.log(
-        `Job ${jobId} backoff ${backoffDelay}ms, retry ${retryCount + 1}/${MAX_DLQ_RETRIES}`,
+    try {
+      // Read pending entries from DLQ stream
+      const entries = await this.redis.xread(
+        'BLOCK',
+        5000, // Block for 5 seconds
+        'STREAMS',
+        dlqStream,
+        '>',
+        'COUNT',
+        10, // Process up to 10 entries
       )
 
-      // Re-add to main queue with delay
-      await this.mainQueue.add(
-        'process-request',
-        { ...data, retryCount: retryCount + 1 },
-        { delay: backoffDelay, removeOnComplete: 10, removeOnFail: 5 },
-      )
+      if (!entries || !entries.length) {
+        return // No new entries
+      }
 
-      this.logger.log(
-        `Retried job ${jobId} to main queue (attempt ${retryCount + 1})`,
-      )
-      return { requeued: true }
-    } else {
-      // Move to dead queue for permanent failures
-      await moveToDeadQueue(
-        this.redis,
-        'danbooru',
-        jobId,
-        error,
-        query,
-        originalError || 'Max retries exceeded',
-      )
-      this.logger.warn(
-        `Job ${jobId} moved to dead queue (max retries or permanent error)`,
-      )
-      return { deadQueued: true }
+      const streamEntries = entries[0][1]
+      for (const [streamId, fields] of streamEntries) {
+        const jobId = fields.find(f => f[0] === 'jobId')?.[1]
+        const error = fields.find(f => f[0] === 'error')?.[1]
+        const query = fields.find(f => f[0] === 'query')?.[1]
+        const retryCountStr = fields.find(f => f[0] === 'retryCount')?.[1]
+        const retryCount = parseInt(retryCountStr || '0', 10)
+        const originalError = fields.find(f => f[0] === 'originalError')?.[1]
+
+        if (!jobId || !error || !query) {
+          this.logger.error(`Invalid DLQ entry ${streamId}, deleting`)
+          await this.redis.xdel(dlqStream, streamId)
+          continue
+        }
+
+        this.logger.error(
+          `Processing DLQ entry ${jobId}: error = ${error}, query = ${query}, retry = ${retryCount}/${MAX_DLQ_RETRIES}`,
+        )
+
+        const isRetryableError =
+          error.includes('No posts found') ||
+          error.includes('Rate limit') ||
+          error.includes('API error')
+
+        if (isRetryableError && retryCount < MAX_DLQ_RETRIES) {
+          // Retry by adding back to main stream
+          const newRetryCount = retryCount + 1
+          this.logger.log(`Retrying job ${jobId} from DLQ to main stream (attempt ${newRetryCount})`)
+
+          const result = await retryFromDLQ(
+            this.redis,
+            apiName,
+            jobId,
+            query,
+            retryCount,
+            streamId,
+          )
+
+          if (result.success) {
+            this.logger.log(`Successfully retried job ${jobId}, removed from DLQ`)
+          } else {
+            this.logger.error(`Failed to retry job ${jobId}: ${result.error}`)
+            // Leave in DLQ for manual intervention
+          }
+        } else {
+          // Move to dead queue for permanent failures
+          await moveToDeadQueue(
+            this.redis,
+            apiName,
+            jobId,
+            error,
+            query,
+            originalError || 'Max retries exceeded',
+          )
+          await this.redis.xdel(dlqStream, streamId)
+          this.logger.warn(
+            `Job ${jobId} moved to dead queue (max retries or permanent error)`,
+          )
+        }
+      }
+    } catch (error) {
+      this.logger.error(`DLQ processing error: ${error.message}`)
+    }
+  }
+
+  // Method to be called periodically or via cron/interval
+  async startProcessing() {
+    while (true) {
+      await this.processDLQ()
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, 1000))
     }
   }
 }

@@ -1,5 +1,5 @@
 import Redis from 'ioredis'
-import { DLQ_DEDUP_WINDOW_SECONDS } from '../../constants'
+import { DLQ_DEDUP_WINDOW_SECONDS, REQUESTS_STREAM, DLQ_STREAM, MAX_DLQ_RETRIES } from '../../constants'
 
 export async function addToDLQ(
   redis: Redis,
@@ -92,4 +92,56 @@ export async function moveToDeadQueue(
     'apiName',
     apiName,
   )
+}
+
+export async function retryFromDLQ(
+  redis: Redis,
+  apiName: string,
+  jobId: string,
+  query: string,
+  retryCount: number,
+  streamId: string,
+): Promise<{ success: boolean; error?: string }> {
+  if (retryCount >= MAX_DLQ_RETRIES) {
+    return { success: false, error: 'Max retries exceeded' }
+  }
+
+  const dlqStream = `${apiName}-dlq`
+  try {
+    // Get apiName from the DLQ entry
+    const entry = await redis.xrange(dlqStream, streamId, streamId, 'COUNT', 1)
+    if (!entry || !entry.length) {
+      return { success: false, error: 'DLQ entry not found' }
+    }
+
+    const [, fields] = entry[0]
+    const entryApiName = fields.find(f => f[0] === 'apiName')?.[1] || apiName
+
+    // Reconstruct original message for REQUESTS_STREAM with backoff
+    const newRetryCount = retryCount + 1
+    const backoffDelay = Math.min(1000 * Math.pow(2, newRetryCount), 60000)
+
+    await redis.xadd(
+      REQUESTS_STREAM,
+      '*',
+      'jobId',
+      jobId,
+      'query',
+      query,
+      'apiName',
+      entryApiName,
+      'retryCount',
+      newRetryCount.toString(),
+      'backoffDelay',
+      backoffDelay.toString(),
+    )
+
+    // Delete from DLQ after successful XADD
+    await redis.xdel(dlqStream, streamId)
+
+    return { success: true }
+  } catch (err) {
+    console.error(`Retry from DLQ failed for job ${jobId}: ${err.message}`)
+    return { success: false, error: err.message }
+  }
 }
