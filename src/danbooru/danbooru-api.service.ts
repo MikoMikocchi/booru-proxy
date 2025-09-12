@@ -5,7 +5,7 @@ import { plainToClass } from 'class-transformer'
 import { validate, ValidationError } from 'class-validator'
 import { DanbooruPost } from './dto/danbooru-post.class'
 import { API_TIMEOUT_MS } from '../common/constants'
-import xss from 'xss'
+import xss, { escapeHtml } from 'xss'
 
 interface DanbooruApiResponse {
   data: DanbooruPost[]
@@ -113,6 +113,7 @@ export class DanbooruApiService {
     // Use empty whiteList to remove all tags, escape attributes, and strip dangerous elements
     return xss(tags, {
       whiteList: {}, // No allowed tags - full stripping
+      escapeHtml, // Escape HTML entities using xss's escapeHtml function
       stripIgnoreTag: true,
       stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed'],
     })

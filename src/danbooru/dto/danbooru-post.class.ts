@@ -5,6 +5,8 @@ import {
   IsEnum,
   IsDateString,
   Min,
+  MaxLength,
+  Matches,
 } from 'class-validator'
 
 export class DanbooruPost {
@@ -23,6 +25,8 @@ export class DanbooruPost {
   tag_string_artist?: string
 
   @IsString()
+  @MaxLength(1000)
+  @Matches(/^[a-z0-9\s_,:()-]+$/, { message: 'Invalid tag characters' })
   tag_string_general: string
 
   @IsOptional()
