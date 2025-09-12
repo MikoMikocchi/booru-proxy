@@ -1,516 +1,659 @@
-import 'reflect-metadata'
+import { Test, TestingModule } from '@nestjs/testing';
+import { DanbooruService } from './danbooru.service';
+import { DanbooruApiService } from './danbooru-api.service';
+import { CacheService } from '../common/cache/cache.service';
+import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service';
+import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
+import * as dlqUtil from '../common/queues/utils/dlq.util';
+import { Logger } from '@nestjs/common';
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-return,@typescript-eslint/unbound-method,@typescript-eslint/require-await */
+jest.mock('./danbooru-api.service');
+jest.mock('../common/cache/cache.service');
+jest.mock('../common/rate-limit/rate-limit-manager.service');
+jest.mock('../common/queues/utils/dlq.util');
+jest.mock('ioredis');
 
-import { Test, TestingModule } from '@nestjs/testing'
-import { ConfigService } from '@nestjs/config'
-import { DanbooruService } from './danbooru.service'
-import axios from 'axios'
-import Redis from 'ioredis'
-import { plainToClass } from 'class-transformer'
-import * as classValidator from 'class-validator'
-import {
-  DanbooruResponse,
-  DanbooruErrorResponse,
-} from './interfaces/danbooru.interface'
-import {
-  API_TIMEOUT_MS,
-  STREAM_BLOCK_MS,
-  RETRY_DELAY_MS,
-  RATE_LIMIT_PER_MINUTE,
-  REQUESTS_STREAM,
-  RESPONSES_STREAM,
-  DLQ_STREAM,
-} from '../common/constants'
+const mockDanbooruApiService = jest.mocked(DanbooruApiService);
+const mockCacheService = jest.mocked(CacheService);
+const mockRateLimitManager = jest.mocked(RateLimitManagerService);
+const mockAddToDLQ = jest.mocked(dlqUtil.addToDLQ);
+const mockRedis = jest.mocked(Redis);
 
-jest.mock('axios')
-jest.mock('ioredis')
-jest.mock('class-transformer')
+interface MockDanbooruApiService {
+  fetchPosts: jest.MockedFunction<any>;
+}
 
-jest.spyOn(classValidator, 'validate').mockResolvedValue([])
+interface MockCacheService {
+  getCachedResponse: jest.MockedFunction<any>;
+  setCache: jest.MockedFunction<any>;
+}
+
+interface MockRateLimitManager {
+  checkRateLimit: jest.MockedFunction<any>;
+}
 
 describe('DanbooruService', () => {
-  let service: DanbooruService
-  let mockConfigService: jest.Mocked<ConfigService>
-  const mockAxios = axios as jest.Mocked<typeof axios>
-  const mockRedisConstructor = Redis as jest.MockedClass<typeof Redis>
-  let mockRedisInstance: any
+  let service: DanbooruService;
+  let mockApiService: MockDanbooruApiService;
+  let mockCacheService: MockCacheService;
+  let mockRateLimitManager: MockRateLimitManager;
+  let mockConfigService: jest.Mocked<ConfigService>;
+  let mockLogger: jest.Mocked<Logger>;
 
   beforeEach(async () => {
+    mockApiService = {
+      fetchPosts: jest.fn(),
+    };
+
+    mockCacheService = {
+      getCachedResponse: jest.fn(),
+      setCache: jest.fn(),
+    };
+
+    mockRateLimitManager = {
+      checkRateLimit: jest.fn(),
+    };
+
     mockConfigService = {
-      get: jest.fn().mockImplementation((key: string): string | null => {
-        if (key === 'DANBOORU_LOGIN') return 'login'
-        if (key === 'DANBOORU_API_KEY') return 'key'
-        if (key === 'REDIS_URL') return 'redis://localhost:6379'
-        if (key === 'RATE_LIMIT_PER_MINUTE') return '60'
-        return null
-      }),
-    } as unknown as jest.Mocked<ConfigService>
+      get: jest.fn(),
+    } as any;
 
-    mockRedisInstance = {
-      xgroup: jest.fn().mockResolvedValue('OK'),
-      xadd: jest.fn().mockResolvedValue('response-id'),
-      xdel: jest.fn().mockResolvedValue(1),
-      xreadgroup: jest.fn().mockResolvedValue(null),
-      xack: jest.fn().mockResolvedValue(1),
-      get: jest.fn().mockResolvedValue(null),
-      setex: jest.fn().mockResolvedValue('OK'),
-      incr: jest.fn().mockResolvedValue(1),
-      expire: jest.fn().mockResolvedValue(1),
-      ping: jest.fn().mockResolvedValue('PONG'),
-      disconnect: jest.fn().mockResolvedValue(undefined),
-    } as any
-
-    mockRedisConstructor.mockImplementation(() => mockRedisInstance)
-    ;(plainToClass as jest.Mock).mockImplementation((dto: any, obj: any) => ({
-      ...obj,
-    }))
+    mockLogger = {
+      log: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+      debug: jest.fn(),
+      verbose: jest.fn(),
+    } as any;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DanbooruService,
+        { provide: DanbooruApiService, useValue: mockApiService },
+        { provide: CacheService, useValue: mockCacheService },
+        { provide: RateLimitManagerService, useValue: mockRateLimitManager },
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: 'REDIS_CLIENT', useValue: mockRedisInstance },
+        { provide: 'REDIS_CLIENT', useValue: mockRedis },
+        { provide: Logger, useValue: mockLogger },
       ],
-    }).compile()
+    }).compile();
 
-    service = module.get<DanbooruService>(DanbooruService)
-  })
+    service = module.get<DanbooruService>(DanbooruService);
 
-  afterEach(() => {
-    jest.clearAllMocks()
-  })
+    jest.clearAllMocks();
+  });
 
   describe('processRequest', () => {
-    const jobId = 'test1'
-    const query = 'hatsune_miku 1girl'
+    const jobId = 'test-job-123';
+    const query = 'cat rating:safe';
+    const clientId = 'user123';
+    const lockKey = 'lock:query:test-query-hash';
+    const mockPost = {
+      id: 1,
+      file_url: 'https://example.com/image.jpg',
+      tag_string_artist: 'artist',
+      tag_string_general: 'cat rating:safe',
+      rating: 's',
+      source: 'source',
+      tag_string_copyright: 'copyright',
+    };
 
-    it('should process request and return DanbooruResponse on success', async () => {
-      const mockPost = {
-        file_url: 'https://example.com/image.jpg',
-        tag_string_artist: 'artist',
-        tag_string_general: 'tags',
-        rating: 's',
-        source: 'https://source.com',
-        tag_string_copyright: 'copyright',
-      } as any
+    beforeEach(() => {
+      // Mock crypto hash
+      (crypto.createHash as jest.MockedFunction<typeof crypto.createHash>).mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue('test-query-hash'),
+      }) as any);
 
-      mockAxios.get.mockResolvedValue({ data: [mockPost] })
-      mockRedisInstance.get.mockResolvedValue(null)
-      mockRedisInstance.incr.mockResolvedValue(1)
+      // Mock Redis for lock
+      mockRedis.set.mockResolvedValue('OK');
+      mockRedis.get.mockResolvedValue(jobId);
+      mockRedis.del.mockResolvedValue(1);
+    });
 
-      const result = await service.processRequest(jobId, query)
+    it('should process request successfully with cache miss', async () => {
+      // Mock rate limit success
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
 
-      expect(mockAxios.get).toHaveBeenCalledWith(
-        expect.stringContaining('danbooru.donmai.us/posts.json'),
-        expect.objectContaining({
-          auth: { username: 'login', password: 'key' },
-          timeout: API_TIMEOUT_MS,
-        }),
-      )
-      expect(result).toEqual<DanbooruResponse>({
+      // Mock cache miss
+      mockCacheService.getCachedResponse.mockResolvedValue(null);
+
+      // Mock API success
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      const result = await service.processRequest(jobId, query, clientId);
+
+      expect(result).toEqual({
         type: 'success',
         jobId,
         imageUrl: 'https://example.com/image.jpg',
         author: 'artist',
-        tags: 'tags',
+        tags: 'cat rating:safe',
         rating: 's',
-        source: 'https://source.com',
+        source: 'source',
         copyright: 'copyright',
-      })
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        RESPONSES_STREAM,
+      });
+
+      // Verify rate limit check
+      expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
+        'danbooru',
+        jobId,
+        clientId,
+      );
+
+      // Verify cache miss
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        false,
+      );
+
+      // Verify API call
+      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(
+        query,
+        1,
+        false,
+      );
+
+      // Verify response published
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
         '*',
-        'type',
-        'success',
         'jobId',
         jobId,
-        'imageUrl',
-        mockPost.file_url,
-        'author',
-        mockPost.tag_string_artist,
-        'tags',
-        mockPost.tag_string_general,
-        'rating',
-        mockPost.rating,
-        'source',
-        mockPost.source,
-        'copyright',
-        mockPost.tag_string_copyright,
-      )
-      expect(mockRedisInstance.incr).toHaveBeenCalledWith(
-        expect.stringContaining('rate:minute:'),
-      )
-      expect(mockRedisInstance.expire).toHaveBeenCalledWith(
-        expect.stringContaining('rate:minute:'),
-        60,
-      )
-      expect(mockRedisInstance.setex).toHaveBeenCalledWith(
-        expect.stringContaining('cache:danbooru:'),
-        3600,
+        'data',
         expect.stringContaining(JSON.stringify(result)),
-      )
-    })
+      );
 
-    it('should return cached response on cache hit', async () => {
-      const cachedResponse: DanbooruResponse = {
+      // Verify cache set
+      expect(mockCacheService.setCache).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        result,
+        false,
+      );
+
+      // Verify lock released
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+
+    it('should return cached response when cache hit (random=false)', async () => {
+      const cachedResponse = {
+        type: 'success',
+        jobId: 'cached-job',
+        imageUrl: 'https://cached.com/image.jpg',
+        author: 'cached artist',
+        tags: 'cached:tags',
+        rating: 'q',
+        source: 'cached source',
+        copyright: 'cached copyright',
+      };
+
+      // Mock rate limit success
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      // Mock cache hit
+      mockConfigService.get.mockReturnValueOnce(false); // DANBOORU_RANDOM = false
+      mockCacheService.getCachedResponse.mockResolvedValue(cachedResponse);
+
+      const result = await service.processRequest(jobId, query, clientId);
+
+      expect(result).toEqual(cachedResponse);
+
+      // Verify cache hit
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        false,
+      );
+
+      // Verify response published
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        expect.stringContaining(JSON.stringify(cachedResponse)),
+      );
+
+      // Should not call API
+      expect(mockApiService.fetchPosts).not.toHaveBeenCalled();
+      expect(mockCacheService.setCache).not.toHaveBeenCalled();
+
+      // Lock should be released
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+
+    it('should fail rate limit check', async () => {
+      const rateLimitError = {
+        allowed: false,
+        error: { error: 'Rate limit exceeded', code: 'RATE_LIMIT' },
+      };
+      mockRateLimitManager.checkRateLimit.mockResolvedValue(rateLimitError as any);
+
+      const result = await service.processRequest(jobId, query, clientId);
+
+      expect(result).toEqual(rateLimitError.error);
+
+      // Verify rate limit error published
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        expect.stringContaining('Rate limit exceeded'),
+      );
+
+      // Should not call cache or API
+      expect(mockCacheService.getCachedResponse).not.toHaveBeenCalled();
+      expect(mockApiService.fetchPosts).not.toHaveBeenCalled();
+      expect(mockCacheService.setCache).not.toHaveBeenCalled();
+      expect(mockAddToDLQ).not.toHaveBeenCalled();
+
+      // Lock should be released even on rate limit failure
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+
+    it('should handle API failure and add to DLQ', async () => {
+      // Mock rate limit success
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      // Mock cache miss
+      mockCacheService.getCachedResponse.mockResolvedValue(null);
+
+      // Mock API failure
+      const apiError = new Error('API server error');
+      mockApiService.fetchPosts.mockRejectedValue(apiError);
+
+      const result = await service.processRequest(jobId, query, clientId);
+
+      expect(result).toEqual({
+        type: 'error',
+        jobId,
+        error: 'No posts found for the query or API error',
+      });
+
+      // Verify error published
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        expect.stringContaining('No posts found for the query or API error'),
+      );
+
+      // Verify added to DLQ
+      expect(mockAddToDLQ).toHaveBeenCalledWith(
+        mockRedis,
+        'danbooru',
+        jobId,
+        'No posts found for the query or API error',
+        query,
+        0,
+      );
+
+      // Lock should be released
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+
+    it('should handle processing errors and add to DLQ', async () => {
+      // Mock rate limit success
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      // Mock cache miss
+      mockCacheService.getCachedResponse.mockResolvedValue(null);
+
+      // Mock API success
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      // Mock error in response building/publishing
+      const publishError = new Error('Publish failed');
+      const originalProcessRequest = mockDanbooruServiceInstance.publishResponse;
+      mockDanbooruServiceInstance.publishResponse = jest.fn().mockRejectedValue(publishError);
+
+      await expect(service.processRequest(jobId, query, clientId)).rejects.toThrow('Publish failed');
+
+      // Verify API was called
+      expect(mockApiService.fetchPosts).toHaveBeenCalled();
+
+      // Verify error was added to DLQ
+      expect(mockAddToDLQ).toHaveBeenCalledWith(
+        mockRedis,
+        'danbooru',
+        jobId,
+        'Publish failed',
+        query,
+        0,
+      );
+
+      // Lock should be released even on error
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+
+    it('should use random=false when configured', async () => {
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      mockConfigService.get.mockReturnValueOnce(false); // DANBOORU_RANDOM = false
+
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      await service.processRequest(jobId, query, clientId);
+
+      // Should check cache when random=false
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        false,
+      );
+
+      // Should cache response when random=false
+      expect(mockCacheService.setCache).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        expect.any(Object),
+        false,
+      );
+    });
+
+    it('should use random=true when configured (default)', async () => {
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      mockConfigService.get.mockReturnValueOnce(true); // DANBOORU_RANDOM = true
+
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      await service.processRequest(jobId, query, clientId);
+
+      // Should not check cache when random=true
+      expect(mockCacheService.getCachedResponse).not.toHaveBeenCalled();
+
+      // Should not cache response when random=true
+      expect(mockCacheService.setCache).not.toHaveBeenCalled();
+    });
+
+    it('should use configurable limit from config', async () => {
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      mockConfigService.get
+        .mockReturnValueOnce(true) // DANBOORU_RANDOM = true
+        .mockReturnValueOnce(5); // DANBOORU_LIMIT = 5
+
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      await service.processRequest(jobId, query, clientId);
+
+      // Should use configured limit
+      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(
+        query,
+        5,
+        true,
+      );
+    });
+
+    it('should release lock when query lock not acquired', async () => {
+      mockRedis.set.mockResolvedValueOnce(null); // Lock not acquired
+
+      const result = await service.processRequest(jobId, query, clientId);
+
+      expect(result).toEqual({
+        type: 'error',
+        jobId,
+        error: 'Query is currently being processed',
+      });
+
+      // Lock should not be released since it was never acquired
+      expect(mockRedis.del).not.toHaveBeenCalled();
+    });
+
+    it('should release lock even when API call succeeds', async () => {
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      mockCacheService.getCachedResponse.mockResolvedValue(null);
+
+      mockApiService.fetchPosts.mockResolvedValue(mockPost);
+
+      mockRedis.set.mockResolvedValueOnce('OK'); // Lock acquired
+      mockRedis.get.mockResolvedValueOnce(jobId); // Lock owned by current job
+      mockRedis.del.mockResolvedValue(1);
+
+      await service.processRequest(jobId, query, clientId);
+
+      // Lock should be released
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        expect.stringContaining('Service-level query lock released'),
+        jobId,
+      );
+    });
+
+    it('should release lock even when unexpected errors occur', async () => {
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as any);
+
+      mockCacheService.getCachedResponse.mockResolvedValue(null);
+
+      // Simulate error after lock acquisition
+      const apiError = new Error('API error');
+      mockApiService.fetchPosts.mockRejectedValue(apiError);
+
+      mockRedis.set.mockResolvedValueOnce('OK'); // Lock acquired
+      mockRedis.get.mockResolvedValueOnce(jobId); // Lock owned by current job
+
+      await service.processRequest(jobId, query, clientId);
+
+      // Lock should be released in finally block
+      expect(mockRedis.del).toHaveBeenCalledWith(lockKey);
+    });
+  });
+
+  describe('publishResponse', () => {
+    it('should publish response to Redis stream', async () => {
+      const mockResponse = {
         type: 'success',
         jobId,
-        imageUrl: 'https://cached.com/image.jpg',
-        author: 'cached_artist',
-        tags: 'cached_tags',
+        imageUrl: 'https://example.com/image.jpg',
+      };
+
+      await service['publishResponse'](jobId, mockResponse);
+
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        JSON.stringify({
+          ...mockResponse,
+          timestamp: expect.any(Number),
+        }),
+      );
+
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining(`Published response for job ${jobId}`),
+      );
+    });
+
+    it('should include timestamp in published response', async () => {
+      const mockResponse = {
+        type: 'success',
+        jobId,
+      };
+
+      await service['publishResponse'](jobId, mockResponse);
+
+      const publishedData = JSON.parse((mockRedis.xadd as jest.Mock).mock.calls[0][5] as string);
+
+      expect(publishedData.timestamp).toBeGreaterThan(0);
+      expect(publishedData.timestamp).toBeLessThanOrEqual(Date.now());
+    });
+  });
+
+  describe('buildSuccessResponse', () => {
+    it('should build proper success response from post data', () => {
+      const mockPost = {
+        id: 1,
+        file_url: 'https://example.com/image.jpg',
+        tag_string_artist: 'artist',
+        tag_string_general: 'cat rating:safe',
+        rating: 's',
+        source: 'source',
+        tag_string_copyright: 'copyright',
+      };
+
+      mockLogger.log.mockReturnValue(undefined);
+
+      const result = service['buildSuccessResponse'](mockPost, jobId);
+
+      expect(result).toEqual({
+        type: 'success',
+        jobId,
+        imageUrl: 'https://example.com/image.jpg',
+        author: 'artist',
+        tags: 'cat rating:safe',
+        rating: 's',
+        source: 'source',
+        copyright: 'copyright',
+      });
+
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining(`Found post for job ${jobId}: author artist`),
+        jobId,
+      );
+    });
+
+    it('should handle null source', () => {
+      const mockPost = {
+        id: 1,
+        file_url: 'https://example.com/image.jpg',
+        tag_string_artist: 'artist',
+        tag_string_general: 'cat rating:safe',
         rating: 's',
         source: null,
-        copyright: 'cached_copyright',
-      }
+        tag_string_copyright: 'copyright',
+      };
 
-      mockRedisInstance.get.mockResolvedValue(JSON.stringify(cachedResponse))
-      mockAxios.get.mockResolvedValue({ data: [] }) // Should not be called
+      const result = service['buildSuccessResponse'](mockPost, jobId);
 
-      const result = await service.processRequest(jobId, query)
+      expect(result.source).toBeNull();
+    });
+  });
 
-      expect(result).toEqual(cachedResponse)
-      expect(mockAxios.get).not.toHaveBeenCalled()
-      expect(mockRedisInstance.get).toHaveBeenCalledWith(
-        expect.stringContaining('cache:danbooru:'),
-      )
-    })
+  describe('handleApiError', () => {
+    it('should handle API error and add to DLQ', async () => {
+      const errorMessage = 'No posts found for the query or API error';
+      const mockQuery = 'test:query';
 
-    it('should handle rate limit exceeded', async () => {
-      mockRedisInstance.incr.mockResolvedValue(RATE_LIMIT_PER_MINUTE + 1)
-      mockRedisInstance.get.mockResolvedValue(null)
+      mockRedis.xadd.mockResolvedValue(1);
+      mockAddToDLQ.mockResolvedValue(undefined);
 
-      const result = await service.processRequest(jobId, query)
+      const result = await service['handleApiError'](errorMessage, jobId, mockQuery);
 
-      expect(result).toEqual<DanbooruErrorResponse>({
+      expect(result).toEqual({
         type: 'error',
         jobId,
-        error: 'Rate limit exceeded. Try again in 1 minute.',
-      })
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        RESPONSES_STREAM,
+        error: errorMessage,
+      });
+
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
         '*',
-        'type',
-        'error',
         'jobId',
         jobId,
-        'error',
-        'Rate limit exceeded. Try again in 1 minute.',
-      )
-    })
+        'data',
+        expect.stringContaining(errorMessage),
+      );
 
-    it('should return DanbooruErrorResponse on API error', async () => {
-      const mockError = new Error('Request failed with status code 401')
-      mockAxios.get.mockRejectedValue(mockError)
-      mockRedisInstance.get.mockResolvedValue(null)
-      mockRedisInstance.incr.mockResolvedValue(1)
+      expect(mockAddToDLQ).toHaveBeenCalledWith(
+        mockRedis,
+        'danbooru',
+        jobId,
+        errorMessage,
+        mockQuery,
+        0,
+      );
+    });
+  });
 
-      const result = await service.processRequest(jobId, query)
+  describe('handleProcessingError', () => {
+    it('should handle processing error and add to DLQ', async () => {
+      const error = new Error('Processing failed');
+      const mockQuery = 'process:error';
 
-      expect(result).toEqual<DanbooruErrorResponse>({
+      mockRedis.xadd.mockResolvedValue(1);
+      mockAddToDLQ.mockResolvedValue(undefined);
+
+      const result = await service['handleProcessingError'](error, jobId, mockQuery);
+
+      expect(result).toEqual({
         type: 'error',
         jobId,
-        error: 'Request failed with status code 401',
-      })
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        DLQ_STREAM,
+        error: 'Processing failed',
+      });
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining(`Error processing job ${jobId}: Processing failed`),
+        jobId,
+      );
+
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
         '*',
         'jobId',
         jobId,
-        'error',
-        'Request failed with status code 401',
-        'query',
-        query,
-      )
-    })
+        'data',
+        expect.stringContaining('Processing failed'),
+      );
 
-    it('should return error if no posts found', async () => {
-      mockAxios.get.mockResolvedValue({ data: [] })
-      mockRedisInstance.get.mockResolvedValue(null)
-      mockRedisInstance.incr.mockResolvedValue(1)
+      expect(mockAddToDLQ).toHaveBeenCalledWith(
+        mockRedis,
+        'danbooru',
+        jobId,
+        'Processing failed',
+        mockQuery,
+        0,
+      );
+    });
 
-      const result = await service.processRequest(jobId, query)
+    it('should handle non-Error processing errors', async () => {
+      const error = 'String error';
+      const mockQuery = 'string:error';
 
-      expect(result).toEqual<DanbooruErrorResponse>({
+      mockRedis.xadd.mockResolvedValue(1);
+      mockAddToDLQ.mockResolvedValue(undefined);
+
+      const result = await service['handleProcessingError'](error, jobId, mockQuery);
+
+      expect(result).toEqual({
         type: 'error',
         jobId,
-        error: 'No posts found for the query',
-      })
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        DLQ_STREAM,
-        '*',
-        'jobId',
+        error: 'String error',
+      });
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining(`Error processing job ${jobId}: String error`),
         jobId,
-        'error',
-        'No posts found for the query',
-        'query',
-        query,
-      )
-    })
-
-    it('should sanitize tags in response', async () => {
-      const mockPost = {
-        file_url: 'https://example.com/image.jpg',
-        tag_string_artist: 'artist',
-        tag_string_general: '<script>alert("xss")</script> tag1, tag2',
-        rating: 's',
-        source: 'https://source.com',
-        tag_string_copyright: 'copy <b>bold</b> right',
-      } as any
-
-      mockAxios.get.mockResolvedValue({ data: [mockPost] })
-      mockRedisInstance.get.mockResolvedValue(null)
-      mockRedisInstance.incr.mockResolvedValue(1)
-
-      const result = await service.processRequest('test-sanitize', 'test query')
-
-      expect(result).toEqual<DanbooruResponse>({
-        type: 'success',
-        jobId: 'test-sanitize',
-        imageUrl: 'https://example.com/image.jpg',
-        author: 'artist',
-        tags: ' tag1, tag2',
-        rating: 's',
-        source: 'https://source.com',
-        copyright: 'copy bold right',
-      })
-    })
-  })
-
-  describe('validation in consumer', () => {
-    it('should publish error on invalid DTO', async () => {
-      const validationError = {
-        property: 'jobId',
-        constraints: { isNotEmpty: 'jobId should not be empty' },
-      } as any
-      ;(classValidator.validate as jest.Mock).mockResolvedValue([
-        validationError,
-      ])
-
-      const mockFields = ['query', 'hatsune_miku']
-      const mockMessage = ['id', mockFields] as any
-      const mockStream = [['danbooru:requests', [mockMessage]]] as any
-
-      let callCount = 0
-      mockRedisInstance.xreadgroup.mockImplementation(async () => {
-        callCount++
-        if (callCount === 1) {
-          return mockStream
-        } else {
-          ;(service as any).running = false
-          return null
-        }
-      })
-
-      await (service as any).startConsumer()
-
-      expect(classValidator.validate).toHaveBeenCalled()
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        RESPONSES_STREAM,
-        '*',
-        'type',
-        'error',
-        'jobId',
-        'unknown',
-        'error',
-        'Invalid request format',
-      )
-      expect(mockRedisInstance.xack).toHaveBeenCalledWith(
-        REQUESTS_STREAM,
-        'danbooru-group',
-        'id',
-      )
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        DLQ_STREAM,
-        '*',
-        'jobId',
-        'unknown',
-        'error',
-        'Invalid request format',
-        'query',
-        'hatsune_miku',
-      )
-    })
-
-    it('should handle invalid query with SQL-like injection', async () => {
-      const validationError = {
-        property: 'query',
-        constraints: {
-          matches:
-            'Query can only contain letters, numbers, underscores, spaces, hyphens, commas, colons, and parentheses (Danbooru-safe tags)',
-        },
-      } as any
-      ;(classValidator.validate as jest.Mock).mockResolvedValue([
-        validationError,
-      ])
-
-      const mockFields = ['jobId', 'test1', 'query', "'; DROP TABLE users; --"]
-      const mockMessage = ['id', mockFields] as any
-      const mockStream = [['danbooru:requests', [mockMessage]]] as any
-
-      let callCount = 0
-      mockRedisInstance.xreadgroup.mockImplementation(async () => {
-        callCount++
-        if (callCount === 1) {
-          return mockStream
-        } else {
-          ;(service as any).running = false
-          return null
-        }
-      })
-
-      await (service as any).startConsumer()
-
-      expect(classValidator.validate).toHaveBeenCalled()
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        RESPONSES_STREAM,
-        '*',
-        'type',
-        'error',
-        'jobId',
-        'test1',
-        'error',
-        'Invalid request format',
-      )
-      expect(mockRedisInstance.xack).toHaveBeenCalledWith(
-        REQUESTS_STREAM,
-        'danbooru-group',
-        'id',
-      )
-      expect(mockRedisInstance.xadd).toHaveBeenCalledWith(
-        DLQ_STREAM,
-        '*',
-        'jobId',
-        'test1',
-        'error',
-        'Invalid request format',
-        'query',
-        "'; DROP TABLE users; --",
-      )
-    })
-
-    it('should handle multiple messages in stream', async () => {
-      const mockPost = {
-        file_url: 'https://example.com/image.jpg',
-        tag_string_artist: 'artist',
-        tag_string_general: 'tags',
-        rating: 's',
-        source: 'https://source.com',
-        tag_string_copyright: 'copyright',
-      } as any
-
-      mockAxios.get.mockResolvedValue({ data: [mockPost] })
-
-      const mockFields1 = ['jobId', 'test1', 'query', 'hatsune_miku 1girl']
-      const mockFields2 = ['jobId', 'test2', 'query', 'cat_ears']
-      const mockMessage1 = ['id1', mockFields1] as any
-      const mockMessage2 = ['id2', mockFields2] as any
-      const mockStream = [
-        ['danbooru:requests', [mockMessage1, mockMessage2]],
-      ] as any
-
-      ;(classValidator.validate as jest.Mock).mockResolvedValue([])
-
-      let callCount = 0
-      mockRedisInstance.xreadgroup.mockImplementation(async () => {
-        callCount++
-        if (callCount === 1) {
-          return mockStream
-        } else {
-          ;(service as any).running = false
-          return null
-        }
-      })
-
-      await (service as any).startConsumer()
-
-      expect(mockRedisInstance.xack).toHaveBeenCalledTimes(2)
-      expect(mockRedisInstance.xadd).toHaveBeenCalledTimes(2) // 2 responses from processRequest
-    })
-
-    it('should handle Redis disconnect gracefully', async () => {
-      const setTimeoutSpy = jest
-        .spyOn(global, 'setTimeout')
-        .mockImplementation((cb: () => void, delay?: number) => {
-          process.nextTick(cb)
-          return 1 as any
-        })
-
-      const mockPost = {
-        file_url: 'https://example.com/image.jpg',
-        tag_string_artist: 'artist',
-        tag_string_general: 'tags',
-        rating: 's',
-        source: 'https://source.com',
-        tag_string_copyright: 'copyright',
-      } as any
-
-      mockAxios.get.mockResolvedValue({ data: [mockPost] })
-
-      const mockError = new Error('Connection lost')
-      const mockFields = ['jobId', 'test1', 'query', 'hatsune_miku']
-      const mockMessage = ['id', mockFields] as any
-      const mockStream = [['danbooru:requests', [mockMessage]]] as any
-
-      ;(classValidator.validate as jest.Mock).mockResolvedValue([])
-
-      let attemptCount = 0
-      let callCount = 0
-      mockRedisInstance.xreadgroup.mockImplementation(async () => {
-        callCount++
-        attemptCount++
-        if (attemptCount <= 5) {
-          throw mockError
-        } else if (callCount === 6) {
-          // Succeed after retries
-          return mockStream
-        } else {
-          ;(service as any).running = false
-          return null
-        }
-      })
-
-      await (service as any).startConsumer()
-
-      expect(mockRedisInstance.xreadgroup).toHaveBeenCalledTimes(7) // 5 failures + success + final null call
-      expect(mockRedisInstance.xack).toHaveBeenCalledWith(
-        REQUESTS_STREAM,
-        'danbooru-group',
-        'id',
-      )
-
-      setTimeoutSpy.mockRestore()
-    }, 20000)
-  })
-
-  describe('cache operations', () => {
-    const jobId = 'test-cache'
-
-    it('should use encodeURIComponent for cache key', async () => {
-      const queryWithSpecialChars = 'cat_ears+rating:s' // + encoded to %2B
-      const mockPost = {
-        file_url: 'https://example.com/image.jpg',
-        tag_string_artist: 'artist',
-        tag_string_general: 'tags',
-        rating: 's',
-        source: 'https://source.com',
-        tag_string_copyright: 'copyright',
-      } as any
-
-      mockAxios.get.mockResolvedValue({ data: [mockPost] })
-      mockRedisInstance.get.mockResolvedValue(null)
-      mockRedisInstance.incr.mockResolvedValue(1)
-
-      await service.processRequest(jobId, queryWithSpecialChars)
-
-      expect(mockRedisInstance.get).toHaveBeenCalledWith(
-        expect.stringContaining('cache:danbooru:cat_ears%2Brating%3As'),
-      )
-      expect(mockRedisInstance.setex).toHaveBeenCalledWith(
-        expect.stringContaining('cache:danbooru:cat_ears%2Brating%3As'),
-        3600,
-        expect.any(String),
-      )
-    })
-  })
-})
+      );
+    });
+  });
+});
