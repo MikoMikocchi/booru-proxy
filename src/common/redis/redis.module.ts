@@ -19,7 +19,8 @@ import { LockUtil } from './utils/lock.util'
           const url = new URL(baseUrl)
           const password =
             url.password || configService.get<string>('REDIS_PASSWORD') || ''
-          redisUrl = url.username ? `rediss://${password}@${url.host}` : `rediss://:${password}@${url.host}`
+          const authPart = url.username ? `${url.username}:${password}` : `:${password}`
+          redisUrl = `rediss://${authPart}@${url.host}`
         }
 
         const url = new URL(redisUrl)
