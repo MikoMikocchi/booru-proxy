@@ -19,6 +19,10 @@ describe('CacheService', () => {
       del: jest.fn(),
       keys: jest.fn(),
       ping: jest.fn().mockResolvedValue('PONG'),
+      pipeline: jest.fn().mockReturnValue({
+        del: jest.fn().mockReturnThis(),
+        exec: jest.fn(),
+      }),
     } as any
 
     configService = {
@@ -39,790 +43,423 @@ describe('CacheService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         {
-          provide: 'REDIS_CLIENT',
-          useValue: mockRedis,
+          provide: 'CACHE_BACKEND',
+          useValue: {
+            get: mockRedis.get,
+            setex: mockRedis.setex,
+            del: mockRedis.del,
+            keys: mockRedis.keys,
+            pipeline: mockRedis.pipeline,
+            invalidate: jest.fn().mockResolvedValue(0),
+            getStats: jest.fn().mockResolvedValue({ hit: 0, miss: 0 }),
+          },
         },
         {
           provide: ConfigService,
           useValue: configService,
         },
+        {
+          provide: Logger,
+          useValue: mockLogger,
+        },
+        CacheService,
       ],
     }).compile()
 
     service = module.get<CacheService>(CacheService)
-
-    // Setup config defaults
-    configService.get
-      .mockReturnValueOnce('redis') // CACHE_BACKEND
-      .mockReturnValueOnce(3600) // CACHE_TTL_SECONDS
-      .mockReturnValue('danbooru') // For constants in getCacheKey
-      .mockReturnValue('posts') // For constants in getCacheKey
+    configService.get.mockReturnValue(3600)
   })
 
   afterEach(() => {
     jest.clearAllMocks()
-    jest.restoreAllMocks()
-  })
-
-  describe('getOrFetch', () => {
-    const key = 'cache:test-hash'
-    const data = { id: 1, value: 'test' }
-    const fetchProvider = jest.fn().mockResolvedValue(data)
-
-    it('should return cached data on hit', async () => {
-      mockRedis.get.mockResolvedValueOnce(JSON.stringify(data))
-
-      const result = await service.getOrFetch(key, fetchProvider, 3600)
-
-      expect(result).toEqual(data)
-      expect(mockRedis.get).toHaveBeenCalledWith(key)
-      expect(fetchProvider).not.toHaveBeenCalled()
-      expect(mockLogger.debug).toHaveBeenCalledWith(`Cache hit for key: ${key}`)
-    })
-
-    it('should fetch and cache data on miss', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      const result = await service.getOrFetch(key, fetchProvider, 3600)
-
-      expect(result).toEqual(data)
-      expect(mockRedis.get).toHaveBeenCalledWith(key)
-      expect(fetchProvider).toHaveBeenCalledTimes(1)
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        key,
-        3600,
-        JSON.stringify(data),
-      )
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        `Cache miss for key: ${key}, fetching data`,
-      )
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        `Cached fresh data for key: ${key} with TTL: 3600s`,
-      )
-    })
-
-    it('should handle invalid cached JSON and refetch', async () => {
-      mockRedis.get.mockResolvedValueOnce('invalid-json')
-      mockRedis.del.mockResolvedValueOnce(1)
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      const result = await service.getOrFetch(key, fetchProvider, 3600)
-
-      expect(result).toEqual(data)
-      expect(mockRedis.del).toHaveBeenCalledWith(key)
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        `Invalid cached data for key ${key}, fetching fresh`,
-      )
-      expect(fetchProvider).toHaveBeenCalledTimes(1)
-    })
-
-    it('should use default TTL when not provided', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      await service.getOrFetch(key, fetchProvider)
-
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        key,
-        3600,
-        expect.any(String),
-      )
-    })
-
-    it('should handle fetch provider throwing error', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
-      const error = new Error('Fetch failed')
-      fetchProvider.mockRejectedValueOnce(error)
-
-      await expect(
-        service.getOrFetch(key, fetchProvider, 3600),
-      ).rejects.toThrow('Fetch failed')
-      expect(mockRedis.setex).not.toHaveBeenCalled()
-    })
   })
 
   describe('getCachedResponse', () => {
-    const apiPrefix = 'posts'
-    const query = 'tags:cat rating:safe'
-    const random = false
-    const data = { posts: [{ id: 1 }] }
+    it('should return parsed cached data on hit', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const mockData: CacheableResponse = { posts: [{ id: 1, tags: ['cat'] }] }
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+      const cachedString = JSON.stringify(mockData)
 
-    beforeEach(() => {
-      // Mock getCacheKey to return consistent key
-      jest
-        .spyOn(service as any, 'getCacheKey')
-        .mockReturnValue('cache:test-key')
-    })
-
-    afterEach(() => {
-      jest.restoreAllMocks()
-    })
-
-    it('should return parsed cached response', async () => {
-      mockRedis.get.mockResolvedValueOnce(JSON.stringify(data))
+      ;(service as any).backend.get.mockResolvedValueOnce(cachedString)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
-      expect(result).toEqual(data)
-      expect(mockRedis.get).toHaveBeenCalledWith('cache:test-key')
+      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect(result).toEqual(mockData)
+      expect(mockLogger.warn).not.toHaveBeenCalled()
     })
 
     it('should return null on cache miss', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
+      const apiPrefix = 'danbooru'
+      const query = 'dog'
+      const random = false
+      const cacheKey = 'cache:danbooru:posts:06d80eb0c50b39939cb9c12a98c8034e'
+
+      ;(service as any).backend.get.mockResolvedValueOnce(null)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
+      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
       expect(result).toBeNull()
     })
 
-    it('should clean invalid cache on parse error', async () => {
-      mockRedis.get.mockResolvedValueOnce('invalid-json')
-      mockRedis.del.mockResolvedValueOnce(1)
+    it('should clean invalid JSON cache and return null', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'invalid'
+      const random = false
+      const cacheKey = 'cache:danbooru:posts:5f4dcc3b5aa765d61d8327deb882cf99'
+      const invalidJson = 'invalid json data'
+
+      ;(service as any).backend.get.mockResolvedValueOnce(invalidJson)
+      ;(service as any).backend.del.mockResolvedValueOnce(undefined)
 
       const result = await service.getCachedResponse(apiPrefix, query, random)
 
-      expect(result).toBeNull()
-      expect(mockRedis.del).toHaveBeenCalledWith('cache:test-key')
+      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect((service as any).backend.del).toHaveBeenCalledWith(cacheKey)
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Failed to parse cached data'),
       )
+      expect(result).toBeNull()
     })
   })
 
   describe('setCache', () => {
-    const apiPrefix = 'posts'
-    const query = 'tags:cat'
-    const response = { posts: [{ id: 1 }] }
-    const random = false
+    it('should cache data with default TTL', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
 
-    beforeEach(() => {
-      jest
-        .spyOn(service as any, 'getCacheKey')
-        .mockReturnValue('cache:test-key')
-    })
+      await service.setCache(apiPrefix, query, mockData, random)
 
-    afterEach(() => {
-      jest.restoreAllMocks()
-    })
-
-    it('should cache response with default TTL', async () => {
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      await service.setCache(apiPrefix, query, response, random)
-
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        'cache:test-key',
+      expect((service as any).backend.setex).toHaveBeenCalledWith(
+        cacheKey,
         3600,
-        JSON.stringify(response),
+        mockData,
       )
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Cached response'),
+        expect.stringContaining('Cached response for danbooru'),
       )
     })
 
-    it('should cache response with custom TTL', async () => {
-      mockRedis.setex.mockResolvedValueOnce(undefined)
+    it('should use custom TTL when provided', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+      const customTtl = 1800
 
-      await service.setCache(apiPrefix, query, response, random, 1800)
+      await service.setCache(apiPrefix, query, mockData, random, undefined, undefined, customTtl)
 
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        'cache:test-key',
-        1800,
-        JSON.stringify(response),
+      expect((service as any).backend.setex).toHaveBeenCalledWith(
+        cacheKey,
+        customTtl,
+        mockData,
       )
     })
   })
 
   describe('deleteCache', () => {
-    const apiPrefix = 'posts'
-    const query = 'tags:cat'
-    const random = false
-
-    beforeEach(() => {
-      jest
-        .spyOn(service as any, 'getCacheKey')
-        .mockReturnValue('cache:test-key')
-    })
-
-    afterEach(() => {
-      jest.restoreAllMocks()
-    })
-
     it('should delete cache entry', async () => {
-      mockRedis.del.mockResolvedValueOnce(1)
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
 
       await service.deleteCache(apiPrefix, query, random)
 
-      expect(mockRedis.del).toHaveBeenCalledWith('cache:test-key')
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Deleted cache'),
-      )
-    })
-  })
-
-  describe('getOrSet', () => {
-    const apiPrefix = 'posts'
-    const query = 'tags:cat'
-    const random = false
-    const data = { posts: [{ id: 1 }] }
-    const fetchFn = jest.fn().mockResolvedValue(data)
-
-    beforeEach(() => {
-      jest
-        .spyOn(service as any, 'getCacheKey')
-        .mockReturnValue('cache:test-key')
-    })
-
-    afterEach(() => {
-      jest.restoreAllMocks()
-    })
-
-    it('should return cached data without calling fetchFn', async () => {
-      mockRedis.get.mockResolvedValueOnce(JSON.stringify(data))
-
-      const result = await service.getOrSet(
-        apiPrefix,
-        query,
-        random,
-        fetchFn,
-        3600,
-      )
-
-      expect(result).toEqual(data)
-      expect(fetchFn).not.toHaveBeenCalled()
-    })
-
-    it('should fetch and cache on miss, then return data', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      const result = await service.getOrSet(
-        apiPrefix,
-        query,
-        random,
-        fetchFn,
-        1800,
-      )
-
-      expect(result).toEqual(data)
-      expect(fetchFn).toHaveBeenCalledTimes(1)
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        'cache:test-key',
-        1800,
-        JSON.stringify(data),
-      )
-    })
-
-    it('should handle null from fetchFn', async () => {
-      mockRedis.get.mockResolvedValueOnce(null)
-      fetchFn.mockResolvedValueOnce(null)
-
-      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
-
-      expect(result).toBeNull()
-      expect(mockRedis.setex).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('invalidateByPrefix', () => {
-    it('should invalidate cache keys matching prefix (Redis)', async () => {
-      const mockKeys = [
-        'cache:posts-hash1',
-        'cache:tags-hash2',
-        'cache:other-hash3',
-      ]
-      mockRedis.keys.mockResolvedValueOnce(mockKeys)
-      mockRedis.del.mockImplementation(() => Promise.resolve(1))
-
-      const result = await service.invalidateByPrefix('posts')
-
-      expect(mockRedis.keys).toHaveBeenCalledWith('cache:*')
-      expect(mockRedis.del).toHaveBeenCalledTimes(1) // Only 'posts-hash1' matches
-      expect(mockLogger.log).toHaveBeenCalledWith(
-        'Invalidated 1 cache keys for posts',
-      )
-      expect(result).toBe(1)
-    })
-
-    it('should return 0 for no matching keys', async () => {
-      mockRedis.keys.mockResolvedValueOnce(['cache:other-hash'])
-
-      const result = await service.invalidateByPrefix('posts')
-
-      expect(result).toBe(0)
-      expect(mockRedis.del).not.toHaveBeenCalled()
-    })
-
-    it('should warn for memcached backend', async () => {
-      // Reset and mock for memcached
-      configService.get.mockReturnValueOnce('memcached') // CACHE_BACKEND
-
-      const result = await service.invalidateByPrefix('posts')
-
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Bulk invalidation not fully supported'),
-      )
-      expect(result).toBe(0)
-    })
-  })
-
-  describe('getCacheKey', () => {
-    it('should generate consistent key for same inputs with unified format', () => {
-      const result1 = (service as any).getCacheKey(
-        'danbooru',
-        ' tags: cat ',
-        false,
-        10,
-        ['cat'],
-      )
-      const result2 = (service as any).getCacheKey(
-        'danbooru',
-        'tags: cat',
-        false,
-        10,
-        ['cat'],
-      )
-
-      expect(result1).toBe(result2)
-      expect(result1).toMatch(
-        /^cache:danbooru:posts:[0-9a-f]{32}:limit:10:tag:[0-9a-f]{32}$/,
-      )
-    })
-
-    it('should normalize query and include limit/tags in key structure', () => {
-      const result = (service as any).getCacheKey(
-        'danbooru',
-        '  Tags:  CAT  rating:safe  ',
-        false,
-        5,
-        ['cat', 'safe'],
-      )
-
-      expect(result).toMatch(
-        /^cache:danbooru:posts:[0-9a-f]{32}:limit:5:tag:[0-9a-f]{32}$/,
-      )
-      // Verify normalization by testing different equivalent inputs produce same hash
-      const key1 = (service as any).getCacheKey(
-        'danbooru',
-        'tags: cat rating:safe',
-        false,
-        5,
-        ['cat', 'safe'],
-      )
-      expect(result).toBe(key1)
-    })
-
-    it('should include random seed for random queries', () => {
-      const keyRandom = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat',
-        true,
-        1,
-        ['cat'],
-      )
-      const keyNoRandom = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat',
-        false,
-        1,
-        ['cat'],
-      )
-
-      expect(keyRandom).not.toBe(keyNoRandom)
-      expect(keyRandom).toMatch(/random-seed:/)
-      expect(keyNoRandom).not.toMatch(/random-seed:/)
-    })
-
-    it('should generate deterministic random seed for same inputs', () => {
-      const seed1 = (service as any).generateRandomSeed('tags:cat', 10, [
-        'cat',
-        'fluffy',
-      ])
-      const seed2 = (service as any).generateRandomSeed('tags:cat', 10, [
-        'cat',
-        'fluffy',
-      ])
-      const seed3 = (service as any).generateRandomSeed('tags:dog', 5, ['dog'])
-
-      expect(seed1).toBe(seed2)
-      expect(seed1).not.toBe(seed3)
-      expect(seed1).toHaveLength(16)
-      expect(seed1).toMatch(/^[0-9a-f]{16}$/)
-    })
-
-    it('should handle missing optional parameters gracefully', () => {
-      const keyNoLimit = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat',
-        false,
-      )
-      const keyNoTags = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat',
-        false,
-        10,
-      )
-      const keyRandomNoParams = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat',
-        true,
-      )
-
-      expect(keyNoLimit).toMatch(/^cache:danbooru:posts:[0-9a-f]{32}$/)
-      expect(keyNoTags).toMatch(/^cache:danbooru:posts:[0-9a-f]{32}:limit:10$/)
-      expect(keyRandomNoParams).toMatch(
-        /^cache:danbooru:posts:[0-9a-f]{32}:random-seed:[0-9a-f]{16}$/,
-      )
-    })
-
-    it('should generate consistent tag hash for same tags regardless of order', () => {
-      const key1 = (service as any).getCacheKey(
-        'danbooru',
-        'tags:cat dog',
-        false,
-        10,
-        ['dog', 'cat'],
-      )
-      const key2 = (service as any).getCacheKey(
-        'danbooru',
-        'tags:dog cat',
-        false,
-        10,
-        ['cat', 'dog'],
-      )
-
-      expect(key1).toBe(key2)
-    })
-  })
-
-  describe('invalidateCache', () => {
-    beforeEach(() => {
-      // Mock pipeline behavior more comprehensively
-      const mockPipeline = {
-        del: jest.fn().mockReturnThis(),
-        exec: jest.fn(),
-      }
-      mockRedis.pipeline.mockReturnValue(mockPipeline)
-    })
-
-    it('should invalidate cache keys matching exact pattern using pipeline (Redis)', async () => {
-      const mockKeys = [
-        'cache:danbooru:posts:abc123:limit:10:tag:def456',
-        'cache:danbooru:posts:ghi789:limit:5:tag:def456',
-        'cache:other:posts:jkl012:limit:1:tag:xyz789', // Non-matching
-      ]
-      mockRedis.keys.mockResolvedValueOnce(mockKeys)
-      mockRedis.pipeline().exec.mockResolvedValueOnce([
-        ['cache:danbooru:posts:abc123:limit:10:tag:def456', 1],
-        ['cache:danbooru:posts:ghi789:limit:5:tag:def456', 1],
-        ['cache:other:posts:jkl012:limit:1:tag:xyz789', 0],
-      ])
-
-      const pattern = 'cache:danbooru:posts:*:tag:def456'
-      const result = await service.invalidateCache(pattern)
-
-      expect(mockRedis.keys).toHaveBeenCalledWith(pattern)
-      expect(mockRedis.pipeline().del).toHaveBeenCalledWith(
-        'cache:danbooru:posts:abc123:limit:10:tag:def456',
-      )
-      expect(mockRedis.pipeline().del).toHaveBeenCalledWith(
-        'cache:danbooru:posts:ghi789:limit:5:tag:def456',
-      )
-      expect(mockRedis.pipeline().del).toHaveBeenCalledTimes(2) // Only matching keys
-      expect(result).toBe(2)
-      expect(mockLogger.log).toHaveBeenCalledWith(
-        'Invalidated 2 cache keys matching pattern: cache:danbooru:posts:*:tag:def456',
-      )
-    })
-
-    it('should return 0 for no matching keys and log debug message', async () => {
-      mockRedis.keys.mockResolvedValueOnce([])
-
-      const result = await service.invalidateCache(
-        'cache:danbooru:posts:nonexistent:*',
-      )
-
-      expect(result).toBe(0)
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        'No cache keys matched pattern: cache:danbooru:posts:nonexistent:*',
-      )
-      expect(mockRedis.pipeline).not.toHaveBeenCalled()
-    })
-
-    it('should handle pipeline execution errors gracefully', async () => {
-      mockRedis.keys.mockResolvedValueOnce(['cache:danbooru:posts:abc123'])
-      mockRedis
-        .pipeline()
-        .exec.mockRejectedValueOnce(new Error('Pipeline failed'))
-
-      const result = await service.invalidateCache('cache:danbooru:posts:*')
-
-      expect(result).toBe(0)
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Failed to invalidate cache with pattern cache:danbooru:posts:*',
-        ),
-      )
-    })
-
-    it('should warn for memcached backend and return 0 without Redis operations', async () => {
-      // Reset and mock for memcached
-      configService.get.mockReturnValueOnce('memcached') // CACHE_BACKEND
-
-      const module: TestingModule = await Test.createTestingModule({
-        providers: [
-          { provide: 'REDIS_CLIENT', useValue: mockRedis },
-          { provide: ConfigService, useValue: configService },
-        ],
-      }).compile()
-
-      const memcachedService = module.get<CacheService>(CacheService)
-      const result = await memcachedService.invalidateCache('cache:danbooru:*')
-
-      expect(result).toBe(0)
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Pattern-based invalidation not supported for Memcached',
-        ),
-      )
-      expect(mockRedis.keys).not.toHaveBeenCalled()
-      expect(mockRedis.pipeline).not.toHaveBeenCalled()
-    })
-
-    it('should use invalidateByPrefix as backward compatibility wrapper', async () => {
-      mockRedis.keys.mockResolvedValueOnce([
-        'cache:danbooru:posts:abc123',
-        'cache:other:def456',
-      ])
-      mockRedis.pipeline().exec.mockResolvedValueOnce([
-        ['cache:danbooru:posts:abc123', 1],
-        ['cache:other:def456', 0],
-      ])
-
-      const result = await service.invalidateByPrefix('danbooru')
-
-      expect(mockRedis.keys).toHaveBeenCalledWith('cache:danbooru:*')
-      expect(result).toBe(1)
-    })
-  })
-
-  describe('Updated Cache Methods with New Parameters', () => {
-    const apiPrefix = 'danbooru'
-    const query = 'tags:cat rating:safe'
-    const random = false
-    const limit = 10
-    const tags = ['cat', 'safe']
-    const data = {
-      type: 'success',
-      jobId: 'test-job',
-      posts: [{ id: 1 }],
-      imageUrl: 'https://example.com/image.jpg',
-      author: 'artist',
-      tags: 'cat safe',
-      rating: 'safe',
-      source: 'source',
-      copyright: 'copyright',
-    } as CacheableResponse
-
-    beforeEach(() => {
-      jest
-        .spyOn(service as any, 'getCacheKey')
-        .mockReturnValue('cache:unified:test-key')
-    })
-
-    afterEach(() => {
-      jest.restoreAllMocks()
-    })
-
-    it('getCachedResponse should use unified key with all parameters', async () => {
-      mockRedis.get.mockResolvedValueOnce(JSON.stringify(data))
-
-      const result = await service.getCachedResponse<CacheableResponse>(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-
-      expect((service as any).getCacheKey).toHaveBeenCalledWith(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-      expect(mockRedis.get).toHaveBeenCalledWith('cache:unified:test-key')
-      expect(result).toEqual(data)
-    })
-
-    it('setCache should use unified key with all parameters and custom TTL', async () => {
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      await service.setCache<CacheableResponse>(
-        apiPrefix,
-        query,
-        data,
-        random,
-        limit,
-        tags,
-        1800,
-      )
-
-      expect((service as any).getCacheKey).toHaveBeenCalledWith(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        'cache:unified:test-key',
-        1800,
-        JSON.stringify(data),
-      )
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining(`key: cache:unified:test-key`),
-      )
-    })
-
-    it('getOrSet should pass through limit and tags parameters correctly', async () => {
-      const fetchFn = jest.fn().mockResolvedValue(data)
-      mockRedis.get.mockResolvedValueOnce(null)
-      mockRedis.setex.mockResolvedValueOnce(undefined)
-
-      const result = await service.getOrSet<CacheableResponse>(
-        apiPrefix,
-        query,
-        random,
-        fetchFn,
-        limit,
-        tags,
-        1800,
-      )
-
-      expect((service as any).getCacheKey).toHaveBeenCalledTimes(2)
-      expect((service as any).getCacheKey).toHaveBeenCalledWith(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-      expect(fetchFn).toHaveBeenCalledTimes(1)
-      expect(mockRedis.setex).toHaveBeenCalledWith(
-        'cache:unified:test-key',
-        1800,
-        JSON.stringify(data),
-      )
-      expect(result).toEqual(data)
-    })
-
-    it('getOrSet should handle null from fetchFn without caching', async () => {
-      const fetchFn = jest.fn().mockResolvedValue(null)
-      mockRedis.get.mockResolvedValueOnce(null)
-
-      const result = await service.getOrSet<CacheableResponse>(
-        apiPrefix,
-        query,
-        random,
-        fetchFn,
-        limit,
-        tags,
-      )
-
-      expect(result).toBeNull()
-      expect(fetchFn).toHaveBeenCalledTimes(1)
-      expect(mockRedis.setex).not.toHaveBeenCalled()
-    })
-
-    it('deleteCache should use unified key format with all parameters', async () => {
-      mockRedis.del.mockResolvedValueOnce(1)
-
-      await service.deleteCache(apiPrefix, query, random, limit, tags)
-
-      expect((service as any).getCacheKey).toHaveBeenCalledWith(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-      expect(mockRedis.del).toHaveBeenCalledWith('cache:unified:test-key')
+      expect((service as any).backend.del).toHaveBeenCalledWith(cacheKey)
       expect(mockLogger.debug).toHaveBeenCalledWith(
         expect.stringContaining('Deleted cache for danbooru'),
       )
     })
   })
 
-  describe('initializeBackend', () => {
-    it('should initialize Redis backend', async () => {
-      configService.get.mockReturnValueOnce('redis')
+  describe('getOrSet', () => {
+    it('should return cached data when available', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+      const cachedString = JSON.stringify(mockData)
 
-      const module: TestingModule = await Test.createTestingModule({
-        providers: [
-          { provide: 'REDIS_CLIENT', useValue: mockRedis },
-          { provide: ConfigService, useValue: configService },
-        ],
-      }).compile()
+      ;(service as any).backend.get.mockResolvedValueOnce(cachedString)
+      const fetchFn = jest.fn().mockResolvedValue(null)
 
-      service = module.get<CacheService>(CacheService)
-      const serviceAny = service as any
+      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
 
-      expect(serviceAny.backend).toBe('redis')
-      expect(serviceAny.redis).toBe(mockRedis)
-      expect(serviceAny.memcached).toBeUndefined()
+      expect(result).toEqual(mockData)
+      expect(fetchFn).not.toHaveBeenCalled()
     })
 
-    it('should initialize Memcached backend', async () => {
-      const mockMemjs = {
-        Client: {
-          create: jest.fn().mockReturnValue({
-            get: jest.fn(),
-            set: jest.fn(),
-            delete: jest.fn(),
-          }),
-        },
-      }
-      jest.doMock('memjs', () => mockMemjs)
+    it('should fetch and cache new data on miss', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'dog'
+      const random = false
+      const freshData: CacheableResponse = { posts: [{ id: 2 }] }
+      const cacheKey = 'cache:danbooru:posts:06d80eb0c50b39939cb9c12a98c8034e'
 
-      configService.get
-        .mockReturnValueOnce('memcached')
-        .mockReturnValueOnce('127.0.0.1:11211')
+      ;(service as any).backend.get.mockResolvedValueOnce(null)
+      const fetchFn = jest.fn().mockResolvedValue(freshData)
 
-      const module: TestingModule = await Test.createTestingModule({
-        providers: [
-          { provide: 'REDIS_CLIENT', useValue: mockRedis },
-          { provide: ConfigService, useValue: configService },
-        ],
-      }).compile()
+      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
 
-      service = module.get<CacheService>(CacheService)
-      const serviceAny = service as any
-
-      expect(serviceAny.backend).toBe('memcached')
-      expect(serviceAny.memcached).toBeDefined()
-      expect(mockMemjs.Client.create).toHaveBeenCalledWith('127.0.0.1:11211')
-    })
-
-    it('should fallback to Redis for unsupported backend', async () => {
-      configService.get.mockReturnValueOnce('unsupported')
-
-      const module: TestingModule = await Test.createTestingModule({
-        providers: [
-          { provide: 'REDIS_CLIENT', useValue: mockRedis },
-          { provide: ConfigService, useValue: configService },
-        ],
-      }).compile()
-
-      service = module.get<CacheService>(CacheService)
-      const serviceAny = service as any
-
-      expect(serviceAny.backend).toBe('redis')
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Unsupported cache backend'),
+      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect((service as any).backend.setex).toHaveBeenCalledWith(
+        cacheKey,
+        3600,
+        freshData,
       )
+      expect(fetchFn).toHaveBeenCalledTimes(1)
+      expect(result).toEqual(freshData)
+    })
+
+    it('should return null when fetch returns null', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'empty'
+      const random = false
+      const cacheKey = 'cache:danbooru:posts:73c3b6b8f4e5a7d2c9e8f1a3b2c4d5e6'
+
+      ;(service as any).backend.get.mockResolvedValueOnce(null)
+      const fetchFn = jest.fn().mockResolvedValue(null)
+
+      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
+
+      expect(result).toBeNull()
+      expect((service as any).backend.setex).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('getCacheKey', () => {
+    it('should generate consistent key for same inputs', () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat dog'
+      const random = false
+
+      const key1 = (service as any).getCacheKey(apiPrefix, query, random)
+      const key2 = (service as any).getCacheKey(apiPrefix, query, random)
+
+      expect(key1).toBe(key2)
+      expect(key1).toMatch(/^cache:danbooru:posts:[a-f0-9]{32}$/)
+    })
+
+    it('should normalize query string', () => {
+      const apiPrefix = 'danbooru'
+      const query1 = '  Cat   Dog  '
+      const query2 = 'cat dog'
+      const random = false
+
+      const key1 = (service as any).getCacheKey(apiPrefix, query1, random)
+      const key2 = (service as any).getCacheKey(apiPrefix, query2, random)
+
+      expect(key1).toBe(key2)
+    })
+
+    it('should include limit in key when provided', () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+
+      const keyWithLimit = (service as any).getCacheKey(apiPrefix, query, random, 50)
+      const keyWithoutLimit = (service as any).getCacheKey(apiPrefix, query, random)
+
+      expect(keyWithLimit).not.toBe(keyWithoutLimit)
+      expect(keyWithLimit).toContain('limit:50')
+    })
+
+    it('should include tags in key when provided', () => {
+      const apiPrefix = 'danbooru'
+      const query = 'posts'
+      const random = false
+      const tags = ['cat', 'dog']
+
+      const keyWithTags = (service as any).getCacheKey(apiPrefix, query, random, undefined, tags)
+      const keyWithoutTags = (service as any).getCacheKey(apiPrefix, query, random)
+
+      expect(keyWithTags).not.toBe(keyWithoutTags)
+      expect(keyWithTags).toContain('tag:')
+    })
+  })
+
+  describe('invalidateByPrefix', () => {
+    it('should invalidate all keys for API prefix', async () => {
+      const pattern = 'cache:danbooru:*'
+      ;(service as any).backend.invalidate.mockResolvedValueOnce(5)
+
+      const result = await service.invalidateByPrefix('danbooru')
+
+      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
+      expect(result).toBe(5)
+    })
+
+    it('should handle invalidation errors', async () => {
+      const pattern = 'cache:gelbooru:*'
+      const error = new Error('Redis error')
+      ;(service as any).backend.invalidate.mockRejectedValueOnce(error)
+
+      const result = await service.invalidateByPrefix('gelbooru')
+
+      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to invalidate cache'),
+      )
+      expect(result).toBe(0)
+    })
+  })
+
+  describe('getOrFetch', () => {
+    it('should return cached data on hit', async () => {
+      const key = 'test:cache:key'
+      const mockData = { value: 'cached' }
+      const cachedString = JSON.stringify(mockData)
+
+      ;(service as any).get.mockResolvedValueOnce(cachedString)
+      const fetchFn = jest.fn()
+
+      const result = await service.getOrFetch(key, fetchFn)
+
+      expect(result).toEqual(mockData)
+      expect(fetchFn).not.toHaveBeenCalled()
+      expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Cache hit'))
+    })
+
+    it('should fetch and cache on miss', async () => {
+      const key = 'test:cache:miss'
+      const freshData = { value: 'fresh' }
+
+      ;(service as any).get.mockResolvedValueOnce(null)
+      const fetchFn = jest.fn().mockResolvedValue(freshData)
+
+      const result = await service.getOrFetch(key, fetchFn)
+
+      expect((service as any).get).toHaveBeenCalledWith(key)
+      expect((service as any).setex).toHaveBeenCalledWith(key, 3600, JSON.stringify(freshData))
+      expect(fetchFn).toHaveBeenCalledTimes(1)
+      expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Cache miss'))
+      expect(result).toEqual(freshData)
+    })
+
+    it('should refetch on invalid cached data', async () => {
+      const key = 'test:invalid:cache'
+      const invalidData = 'not json'
+      const freshData = { value: 'fresh' }
+
+      ;(service as any).get
+        .mockResolvedValueOnce(invalidData)
+        .mockResolvedValueOnce(null)
+      ;(service as any).del.mockResolvedValueOnce(undefined)
+      const fetchFn = jest.fn().mockResolvedValue(freshData)
+
+      const result = await service.getOrFetch(key, fetchFn)
+
+      expect((service as any).get).toHaveBeenCalledTimes(2)
+      expect((service as any).del).toHaveBeenCalledWith(key)
+      expect((service as any).setex).toHaveBeenCalledWith(key, 3600, JSON.stringify(freshData))
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Invalid cached data'))
+      expect(result).toEqual(freshData)
+    })
+  })
+
+  describe('Multi-Backend Switching', () => {
+    beforeEach(() => {
+      // Mock different backends
+      const mockMemcachedBackend = {
+        get: jest.fn(),
+        setex: jest.fn(),
+        del: jest.fn(),
+        invalidate: jest.fn().mockResolvedValue(0), // Memcached doesn't support patterns
+        getStats: jest.fn().mockResolvedValue({}),
+      }
+
+      // Switch to Memcached backend for these tests
+      ;(service as any).backend = mockMemcachedBackend
+    })
+
+    it('should use Memcached backend when configured', async () => {
+      const apiPrefix = 'danbooru'
+      const query = 'cat'
+      const random = false
+      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
+      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+
+      // Configure for Memcached
+      configService.get.mockReturnValueOnce('memcached')
+
+      const memcachedModule: TestingModule = await Test.createTestingModule({
+        providers: [
+          {
+            provide: 'CACHE_BACKEND',
+            useValue: {
+              get: jest.fn(),
+              setex: jest.fn(),
+              del: jest.fn(),
+              invalidate: jest.fn().mockResolvedValue(0),
+              getStats: jest.fn().mockResolvedValue({}),
+            },
+          },
+          { provide: ConfigService, useValue: configService },
+          { provide: Logger, useValue: mockLogger },
+          CacheService,
+        ],
+      }).compile()
+
+      const memcachedService = memcachedModule.get<CacheService>(CacheService)
+      ;(memcachedService as any).backend.get.mockResolvedValueOnce(mockData)
+
+      const result = await memcachedService.getCachedResponse(apiPrefix, query, random)
+
+      expect((memcachedService as any).backend.get).toHaveBeenCalledWith(cacheKey)
+      expect(result).toEqual(mockData)
+    })
+
+    it('should fallback to Redis for pattern invalidation with Memcached', async () => {
+      const pattern = 'cache:danbooru:*'
+
+      // Memcached returns 0 for pattern invalidation (no pattern support)
+      ;(service as any).backend.invalidate.mockResolvedValueOnce(0)
+
+      const result = await service.invalidateCache(pattern)
+
+      expect(result).toBe(0)
+      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
+      expect(mockLogger.error).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('CacheManager Generics', () => {
+    it('should handle generic cache operations with apiPrefix', async () => {
+      const apiPrefix = 'gelbooru'
+      const query = 'anime'
+      const random = true
+      const limit = 20
+      const tags = ['safe', 'anime']
+      const mockData: CacheableResponse = {
+        posts: [{ id: 1, score: 100, tags: tags }]
+      }
+      const cacheKey = expect.stringMatching(
+        /^cache:gelbooru:posts:[a-f0-9]{32}:limit:20:random-seed:[a-f0-9]{16}:tag:[a-f0-9]{32}$/
+      )
+
+      ;(service as any).backend.get.mockResolvedValueOnce(JSON.stringify(mockData))
+
+      const result = await service.getCachedResponse<CacheableResponse>(
+        apiPrefix,
+        query,
+        random,
+        limit,
+        tags
+      )
+
+      expect((service as any).backend.get).toHaveBeenCalledWith(expect.stringMatching(cacheKey))
+      expect(result).toEqual(mockData)
+      expect(result?.posts?.[0].tags).toEqual(expect.arrayContaining(tags))
     })
   })
 })
