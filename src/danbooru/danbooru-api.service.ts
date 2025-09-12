@@ -45,7 +45,8 @@ export class DanbooruApiService {
         if (
           currentRetryCount < maxRetries &&
           (error.code === 'ECONNABORTED' ||
-            (error.response?.status && (error.response.status >= 500 || error.response.status === 429)))
+            (error.response?.status &&
+              (error.response.status >= 500 || error.response.status === 429)))
         ) {
           // Clone config to avoid mutation
           const retryConfig = {

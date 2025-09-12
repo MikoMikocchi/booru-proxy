@@ -15,9 +15,14 @@ export class RateLimitManagerService {
   async checkRateLimit(
     jobId: string,
     clientId?: string,
-  ): Promise<{ allowed: false; error: DanbooruErrorResponse } | { allowed: true }> {
-    const rateLimitPerMinute = this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
-    const rateKey = clientId ? `rate:danbooru:${clientId}` : `rate:danbooru:global`
+  ): Promise<
+    { allowed: false; error: DanbooruErrorResponse } | { allowed: true }
+  > {
+    const rateLimitPerMinute =
+      this.configService.get<number>('RATE_LIMIT_PER_MINUTE') || 60
+    const rateKey = clientId
+      ? `rate:danbooru:${clientId}`
+      : `rate:danbooru:global`
 
     const isAllowed = await this.rateLimiterService.checkRateLimit(
       rateKey,
@@ -26,7 +31,10 @@ export class RateLimitManagerService {
     )
 
     if (!isAllowed) {
-      this.logger.warn(`Rate limit exceeded for job ${jobId} (client: ${clientId || 'global'})`, jobId)
+      this.logger.warn(
+        `Rate limit exceeded for job ${jobId} (client: ${clientId || 'global'})`,
+        jobId,
+      )
       const error: DanbooruErrorResponse = {
         type: 'error',
         jobId,

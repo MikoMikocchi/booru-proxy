@@ -9,13 +9,20 @@ import { DanbooruErrorResponse } from './interfaces/danbooru.interface'
 export class ValidationService {
   private readonly logger = new Logger(ValidationService.name)
 
-  async validateRequest(jobData: { [key: string]: string }): Promise<{ valid: false; error: DanbooruErrorResponse } | { valid: true; dto: CreateRequestDto }> {
+  async validateRequest(jobData: {
+    [key: string]: string
+  }): Promise<
+    | { valid: false; error: DanbooruErrorResponse }
+    | { valid: true; dto: CreateRequestDto }
+  > {
     const requestDto = plainToClass(CreateRequestDto, jobData)
     const errors = await validate(requestDto)
 
     if (errors.length > 0) {
       const jobId = jobData.jobId || 'unknown'
-      this.logger.warn(`Validation error for job ${jobId}: ${JSON.stringify(errors)}`)
+      this.logger.warn(
+        `Validation error for job ${jobId}: ${JSON.stringify(errors)}`,
+      )
       const error: DanbooruErrorResponse = {
         type: 'error',
         jobId,

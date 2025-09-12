@@ -52,27 +52,41 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     query: string,
     clientId?: string,
   ): Promise<DanbooruResponse> {
-    this.logger.log(`Processing job ${jobId} for query: ${query.replace(/./g, '*')}`, jobId)
+    this.logger.log(
+      `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
+      jobId,
+    )
 
     try {
       const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
 
       // Use extracted DTO from validation (but since processRequest doesn't have jobData, adjust to use parameters and call validation separately if needed)
       // For now, assume validation done in consumer, here start from rate limit
-      const rateCheck = await this.rateLimitManagerService.checkRateLimit(jobId, clientId)
+      const rateCheck = await this.rateLimitManagerService.checkRateLimit(
+        jobId,
+        clientId,
+      )
       if (!rateCheck.allowed) {
         await this.publishResponse(jobId, rateCheck.error)
         return rateCheck.error
       }
 
-      const responseOrNull = await this.cacheManagerService.getCachedOrFetch(query, random, jobId)
+      const responseOrNull = await this.cacheManagerService.getCachedOrFetch(
+        query,
+        random,
+        jobId,
+      )
       if (responseOrNull) {
         await this.publishResponse(jobId, responseOrNull)
         return responseOrNull
       }
 
       const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
-      const post = await this.danbooruApiService.fetchPosts(query, limit, random)
+      const post = await this.danbooruApiService.fetchPosts(
+        query,
+        limit,
+        random,
+      )
       if (!post) {
         const errorMessage = 'No posts found for the query or API error'
         const error: DanbooruErrorResponse = {
@@ -88,7 +102,11 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       const responseData = this.buildSuccessResponse(post, jobId)
       await this.publishResponse(jobId, responseData)
 
-      await this.cacheManagerService.cacheResponseIfNeeded(query, responseData, random)
+      await this.cacheManagerService.cacheResponseIfNeeded(
+        query,
+        responseData,
+        random,
+      )
 
       return responseData
     } catch (error: unknown) {
@@ -100,16 +118,10 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     const responseKey = RESPONSES_STREAM
     const jsonData = JSON.stringify({ ...data, timestamp: Date.now() })
 
-    await this.redis.xadd(responseKey, '*',
-      'jobId', jobId,
-      'data', jsonData
-    )
+    await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', jsonData)
 
     this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
   }
-
-  // Private methods like checkRateLimit, getCachedOrFetch removed - now handled by manager services
-
 
   private buildSuccessResponse(
     post: DanbooruPost,

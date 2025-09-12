@@ -105,7 +105,11 @@ describe('DanbooruService (e2e)', () => {
     await redisClient.ping()
 
     const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule.forRoot({ isGlobal: true }), TestDanbooruModule, AuthTestModule],
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true }),
+        TestDanbooruModule,
+        AuthTestModule,
+      ],
       providers: [
         { provide: 'REDIS_CLIENT', useValue: redisClient },
         { provide: DanbooruApiService, useValue: mockDanbooruApiService },
@@ -118,7 +122,8 @@ describe('DanbooruService (e2e)', () => {
       imports: [AuthTestModule],
     }).compile()
 
-    const validationService = authModule.get<ValidationService>(ValidationService)
+    const validationService =
+      authModule.get<ValidationService>(ValidationService)
 
     // Create manual service mock using existing mocks - bypass DI entirely
     service = {
@@ -323,13 +328,13 @@ describe('DanbooruService (e2e)', () => {
             '1',
             'EX',
             DEDUP_TTL_SECONDS,
-            'NX'
+            'NX',
           )
           return { index, result, success: result === 'OK' }
         } catch (error) {
           return { index, error: error.message, success: false }
         }
-      })()
+      })(),
     )
 
     // Execute all attempts concurrently
