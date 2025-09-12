@@ -60,14 +60,40 @@ async function bootstrap() {
     const url = new URL(redisUrl)
     let tlsConfig: any = undefined
     if (useTls) {
-      const ca = configService.get<string>('REDIS_TLS_CA')
-      const cert = configService.get<string>('REDIS_TLS_CERT')
-      const key = configService.get<string>('REDIS_TLS_KEY')
-      if (ca && cert && key) {
+      const caPath = configService.get<string>('REDIS_TLS_CA')
+      const certPath = configService.get<string>('REDIS_TLS_CERT')
+      const keyPath = configService.get<string>('REDIS_TLS_KEY')
+
+      if (caPath && certPath && keyPath) {
+        const fs = require('fs')
+        try {
+          const caContent = fs.readFileSync(caPath, 'utf8')
+          const certContent = fs.readFileSync(certPath, 'utf8')
+          const keyContent = fs.readFileSync(keyPath, 'utf8')
+
+          // Validate PEM format
+          if (!caContent.includes('-----BEGIN CERTIFICATE-----') ||
+              !certContent.includes('-----BEGIN CERTIFICATE-----') ||
+              (!keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
+               !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----'))) {
+            throw new Error('Invalid PEM format in certificate files')
+          }
+
+          tlsConfig = {
+            ca: [caContent],
+            cert: [certContent],
+            key: keyContent,
+            rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
+          }
+        } catch (error) {
+          console.warn('Failed to load TLS certificates:', error.message)
+          tlsConfig = {
+            rejectUnauthorized: false // Fallback for dev
+          }
+        }
+      } else {
         tlsConfig = {
-          ca: ca,
-          cert: cert,
-          key: key,
+          rejectUnauthorized: false // Fallback if paths not provided
         }
       }
     }

@@ -23,7 +23,7 @@ import { MemcachedBackendService } from './backends/memcached-backend.service'
       inject: [ConfigService],
     },
   ],
-  exports: [CacheService, CacheManagerService, 'CACHE_BACKEND'],
+  exports: [CacheService, CacheManagerService, 'CACHE_BACKEND', RedisBackendService],
 })
 export class CacheModule {
   static forRootAsync() {

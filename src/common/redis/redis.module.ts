@@ -32,10 +32,22 @@ import { LockUtil } from './utils/lock.util'
           if (caPath && certPath && keyPath) {
             const fs = require('fs')
             try {
+              const caContent = fs.readFileSync(caPath, 'utf8')
+              const certContent = fs.readFileSync(certPath, 'utf8')
+              const keyContent = fs.readFileSync(keyPath, 'utf8')
+
+              // Validate PEM format
+              if (!caContent.includes('-----BEGIN CERTIFICATE-----') ||
+                  !certContent.includes('-----BEGIN CERTIFICATE-----') ||
+                  !keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
+                  !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+                throw new Error('Invalid PEM format in certificate files')
+              }
+
               tlsConfig = {
-                ca: [fs.readFileSync(caPath, 'utf8')],
-                cert: [fs.readFileSync(certPath, 'utf8')],
-                key: fs.readFileSync(keyPath, 'utf8'),
+                ca: [caContent],
+                cert: [certContent],
+                key: keyContent,
                 rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
               }
             } catch (error) {
