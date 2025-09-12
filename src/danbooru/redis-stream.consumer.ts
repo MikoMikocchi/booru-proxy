@@ -157,13 +157,27 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                 )
 
                 // Ignore return value for shutdown purposes
-                await this.danbooruService.processRequest(
-                  jobId,
-                  query,
-                  requestDto.clientId,
-                )
-                // ACK the message
-                await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+                try {
+                  await this.danbooruService.processRequest(
+                    jobId,
+                    query,
+                    requestDto.clientId,
+                  )
+                } catch (error) {
+                  this.logger.error(
+                    `Failed to process job ${jobId}: ${error.message}`,
+                    error.stack,
+                  )
+                  await addToDLQ(
+                    this.redis,
+                    jobId,
+                    `Processing failed: ${error.message}`,
+                    query,
+                  )
+                } finally {
+                  // ACK the message
+                  await this.redis.xack(REQUESTS_STREAM, 'danbooru-group', id)
+                }
               })()
 
               this.pendingPromises.push(innerPromise)
