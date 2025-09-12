@@ -63,10 +63,10 @@ describe('ValidationService', () => {
     service = module.get<ValidationService>(ValidationService)
 
     // Reset mocks
-    mockPlainToClass.mockReset()
-    mockValidate.mockReset()
-    mockCreateHmac.mockReset()
-    mockRateLimitManager.checkRateLimit.mockReset()
+    mockPlainToClass.mockClear()
+    mockValidate.mockClear()
+    jest.clearAllMocks()
+    mockRateLimitManager.checkRateLimit.mockClear()
   })
 
   afterEach(() => {
