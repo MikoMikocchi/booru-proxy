@@ -26,15 +26,15 @@ describe('DlqConsumer', () => {
       xdel: jest.fn(),
     } as any
 
-    // Mock the dlqUtil functions to use our mockRedis
-    dlqUtil.retryFromDLQ = jest.fn().mockImplementation((redis, ...args) => {
+    // Configure existing mocks to use our mockRedis
+    mockRetryFromDLQ.mockImplementation((redis, ...args) => {
       if (redis === mockRedis) {
         return Promise.resolve({ success: true })
       }
       return Promise.resolve({ success: false })
     })
 
-    dlqUtil.moveToDeadQueue = jest.fn().mockImplementation((redis, ...args) => {
+    mockMoveToDeadQueue.mockImplementation((redis, ...args) => {
       if (redis === mockRedis) {
         return Promise.resolve()
       }
