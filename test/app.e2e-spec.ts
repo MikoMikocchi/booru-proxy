@@ -306,6 +306,62 @@ describe('DanbooruService (e2e)', () => {
     expect(mockRateLimiterService.checkRateLimit).toHaveBeenCalledWith('global')
   })
 
+  it('should handle concurrent duplicate jobs with atomic deduplication', async () => {
+    const jobId = 'e2e-concurrent-dup-1'
+    const processedKey = `processed:${jobId}`
+    const DEDUP_TTL_SECONDS = 300 // Match the constant value used in production
+
+    // Clear any existing key
+    await redisClient.del(processedKey)
+
+    // Create 5 concurrent attempts to set the deduplication key
+    const attempts = Array.from({ length: 5 }, (_, index) =>
+      (async () => {
+        try {
+          const result = await redisClient.set(
+            processedKey,
+            '1',
+            'EX',
+            DEDUP_TTL_SECONDS,
+            'NX'
+          )
+          return { index, result, success: result === 'OK' }
+        } catch (error) {
+          return { index, error: error.message, success: false }
+        }
+      })()
+    )
+
+    // Execute all attempts concurrently
+    const results = await Promise.all(attempts)
+
+    // Verify exactly one succeeded, others failed due to NX
+    const successfulAttempts = results.filter(r => r.success)
+    const failedAttempts = results.filter(r => !r.success)
+
+    expect(successfulAttempts).toHaveLength(1)
+    expect(failedAttempts).toHaveLength(4)
+
+    // Verify the successful one got 'OK'
+    expect(successfulAttempts[0].result).toBe('OK')
+
+    // Verify the failed ones did not get 'OK' (should be null in ioredis for NX failure)
+    failedAttempts.forEach(attempt => {
+      expect(attempt.result).not.toBe('OK')
+      expect(attempt.result).toBeNull()
+    })
+
+    // Verify the key exists and has TTL
+    const keyExists = await redisClient.exists(processedKey)
+    expect(keyExists).toBe(1)
+
+    const ttl = await redisClient.ttl(processedKey)
+    expect(ttl).toBeGreaterThanOrEqual(DEDUP_TTL_SECONDS - 5) // Allow some time variance
+    expect(ttl).toBeLessThanOrEqual(DEDUP_TTL_SECONDS)
+
+    // Clean up
+    await redisClient.del(processedKey)
+  }, 10000)
   it('should handle DLQ retry logic', async () => {
     const jobId = 'e2e-dlq-retry-1'
     const query = 'dlq_test'

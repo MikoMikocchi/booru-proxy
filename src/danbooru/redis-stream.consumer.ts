@@ -102,7 +102,8 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                 }
 
                 // Use ValidationService for comprehensive validation including API key verification
-                const validation = await this.validationService.validateRequest(jobData)
+                const validation =
+                  await this.validationService.validateRequest(jobData)
                 if (!validation.valid) {
                   const jobId = jobData.jobId || 'unknown'
                   const maskedQuery = jobData.query
@@ -112,7 +113,10 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                     `Validation failed for job ${jobId}: ${validation.error.error}, query: ${maskedQuery}`,
                     jobId,
                   )
-                  await this.danbooruService.publishResponse(jobId, validation.error)
+                  await this.danbooruService.publishResponse(
+                    jobId,
+                    validation.error,
+                  )
                   // Add to dead-letter queue for validation failures
                   await addToDLQ(
                     this.redis,
@@ -129,8 +133,14 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
 
                 // Deduplication check with per-item TTL
                 const processedKey = `processed:${jobId}`
-                const isDuplicate = await this.redis.exists(processedKey)
-                if (isDuplicate) {
+                const result = await this.redis.set(
+                  processedKey,
+                  '1',
+                  'EX',
+                  DEDUP_TTL_SECONDS,
+                  'NX',
+                )
+                if (result !== 'OK') {
                   this.logger.warn(
                     `Duplicate job ${jobId} detected, skipping`,
                     jobId,
@@ -139,8 +149,7 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
                   return
                 }
 
-                // Mark as processed with TTL
-                await this.redis.setex(processedKey, DEDUP_TTL_SECONDS, '1')
+                // Key set successfully, proceed with processing
 
                 this.logger.log(
                   `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
