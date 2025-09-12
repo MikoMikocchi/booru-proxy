@@ -17,6 +17,7 @@ import { addToDLQ, dedupCheck } from './utils/dlq.util'
 import {
   DEDUP_TTL_SECONDS,
   QUERY_LOCK_TIMEOUT_SECONDS,
+  getStreamName,
 } from '../../common/constants'
 import * as crypto from 'crypto'
 import { ModuleRef } from '@nestjs/core'
@@ -62,7 +63,7 @@ export class RedisStreamConsumer
       // Ensure apiPrefix is set in validation config
       const validationData = { ...data, apiPrefix };
       const validation = await this.validationService.validateRequest(validationData);
-      
+
       if (!validation.valid) {
         const queryHash = crypto.createHash('sha256').update(data.query).digest('hex').slice(0, 8);
         this.logger.warn(
@@ -71,7 +72,7 @@ export class RedisStreamConsumer
         );
         return { valid: false, error: validation.error };
       }
-      
+
       return { valid: true, error: null };
     } catch (error) {
       this.logger.error(`Validation service error for job ${jobId} (${apiPrefix}): ${error.message}`, jobId);
@@ -151,15 +152,13 @@ export class RedisStreamConsumer
       // Process the request using the API service
       const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
       this.logger.debug(`Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`);
-      
+
       await apiService.processRequest(jobId, query, clientId);
-      
+
       // Invalidate related caches after successful processing (if service supports it)
-      if (apiService.invalidateCache) {
-        const invalidated = await apiService.invalidateCache(apiPrefix, query, true); // Assume random=true
-        this.logger.debug(`Invalidated ${invalidated} cache entries for ${apiPrefix} job ${jobId}`);
-      }
-      
+      // Note: Cache invalidation should be handled by the specific API service
+      this.logger.debug(`Cache invalidation responsibility delegated to ${apiPrefix} service for job ${jobId}`);
+
     } catch (error) {
       const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
       this.logger.error(
@@ -171,142 +170,147 @@ export class RedisStreamConsumer
   }
 
   /**
-   * Enhanced job processing with multi-level deduplication:
-   * 1. DLQ duplicate check for recent failures
-   * 2. Query-level locking to prevent concurrent processing
-   * 3. Job-level deduplication as final safeguard
+   * Main job processing method - refactored to use extracted helper methods
+   * Supports multiple APIs via apiPrefix parameter and getStreamName for dynamic streams
    */
-  async process(job: Job<{ query: string; clientId?: string }>) {
-    // Generate server-side jobId for uniqueness and deduplication
-    const jobId = crypto.randomUUID()
-    const data = job.data
-    const { query, clientId } = data
+  async process(job: Job<{ query: string; clientId?: string; apiPrefix?: string }>) {
+    const jobId = crypto.randomUUID();
+    const data = job.data;
+    const { query, clientId, apiPrefix = 'danbooru' } = data;
+    const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 8);
 
     this.logger.log(
-      `Processing job ${jobId} for query: ${query.replace(/./g, '*')}`,
+      `Processing ${apiPrefix} job ${jobId} for query (${query.length} chars, hash: ${queryHash})`,
       jobId,
-    )
+    );
 
-    // Enhanced deduplication: Check for recent duplicate queries in DLQ first
-    const hasRecentDlqDuplicate = await dedupCheck(
-      this.redis,
-      'danbooru',
-      query,
-      jobId,
-    )
-    if (hasRecentDlqDuplicate) {
-      this.logger.warn(
-        `Recent duplicate query found in DLQ for job ${jobId}, skipping`,
-        jobId,
-      )
-      // Note: danbooruService not yet initialized, publish directly to stream
-      const responseKey = 'danbooru:responses'
-      const errorResponse = JSON.stringify({
-        type: 'error',
-        jobId,
-        error:
-          'Duplicate request detected in recent failures - please try again later',
-        timestamp: Date.now(),
-      })
-      await this.redis.xadd(
-        responseKey,
-        '*',
-        'jobId',
-        jobId,
-        'data',
-        errorResponse,
-      )
-      return { skipped: true, reason: 'DLQ duplicate' }
-    }
+    // 1. Query-level locking with apiPrefix prefix to prevent cross-API conflicts
+    const fullQueryHash = crypto.createHash('sha256').update(query).digest('hex');
+    const lockKey = `lock:query:${apiPrefix}:${fullQueryHash}`;
+    const lockAcquired = await this.acquireLock(lockKey, jobId);
 
-    // Query-level locking to prevent concurrent processing of same query
-    const queryHash = crypto.createHash('sha256').update(query).digest('hex')
-    const lockKey = `lock:query:${queryHash}`
-    const lockAcquired = await this.acquireLock(lockKey, jobId)
     if (!lockAcquired) {
       this.logger.warn(
-        `Failed to acquire query lock for job ${jobId}, skipping`,
+        `Failed to acquire query lock for ${apiPrefix} job ${jobId} (hash: ${queryHash}), skipping`,
         jobId,
-      )
-      const responseKey = 'danbooru:responses'
+      );
+
+      const responseKey = getStreamName(apiPrefix, 'responses');
       const errorResponse = JSON.stringify({
         type: 'error',
         jobId,
         error: 'Query currently being processed - please wait and try again',
         timestamp: Date.now(),
-      })
-      await this.redis.xadd(
-        responseKey,
-        '*',
-        'jobId',
-        jobId,
-        'data',
-        errorResponse,
-      )
-      return { skipped: true, reason: 'lock failed' }
+      });
+
+      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
+      return { skipped: true, reason: 'lock failed' };
     }
 
     try {
-      // Get services via ModuleRef to avoid circular dependency
-      if (!this.danbooruService) {
-        this.danbooruService = this.moduleRef.get(DanbooruService)
-      }
-      if (!this.validationService) {
-        this.validationService = this.moduleRef.get(ValidationService)
-      }
-
-      // Job-level deduplication as fallback
-      const processedKey = `processed:${jobId}`
+      // 2. Job-level deduplication as final safeguard
+      const processedKey = `processed:${jobId}`;
       const result = await this.redis.set(
         processedKey,
         '1',
         'EX',
         DEDUP_TTL_SECONDS,
         'NX',
-      )
+      );
+
       if (result !== 'OK') {
-        this.logger.warn(`Duplicate job ${jobId} detected, skipping`, jobId)
-        return { skipped: true }
+        this.logger.warn(`Duplicate job ${jobId} detected, skipping`, jobId);
+        return { skipped: true, reason: 'job duplicate' };
       }
 
-      // Validation
-      const validation = await this.validationService.validateRequest(data)
-      if (!validation.valid) {
+      // 3. DLQ duplicate check using extracted method
+      const hasDlqDuplicate = await this.dedupCheck(apiPrefix, query, jobId);
+      if (hasDlqDuplicate) {
         this.logger.warn(
-          `Validation failed for job ${jobId}: ${validation.error.error}`,
+          `Recent duplicate query found in DLQ for ${apiPrefix} job ${jobId} (hash: ${queryHash}), skipping`,
           jobId,
-        )
-        await this.danbooruService.publishResponse(jobId, validation.error)
-        // Check DLQ duplicate before adding validation error
-        const hasValidationDlqDuplicate = await dedupCheck(
-          this.redis,
-          'danbooru',
-          query,
+        );
+
+        const responseKey = getStreamName(apiPrefix, 'responses');
+        const errorResponse = JSON.stringify({
+          type: 'error',
           jobId,
-        )
+          error: 'Duplicate request detected in recent failures - please try again later',
+          timestamp: Date.now(),
+        });
+
+        await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
+        return { skipped: true, reason: 'DLQ duplicate' };
+      }
+
+      // 4. Message validation using extracted method
+      const validationResult = await this.validateMessage(data, apiPrefix, jobId);
+      if (!validationResult.valid) {
+        // Publish validation error response
+        const responseKey = getStreamName(apiPrefix, 'responses');
+        await this.redis.xadd(
+          responseKey,
+          '*',
+          'jobId',
+          jobId,
+          'data',
+          JSON.stringify({ ...validationResult.error, timestamp: Date.now() }),
+        );
+
+        // Add to DLQ with query hash for privacy (store length for debugging)
+        const hasValidationDlqDuplicate = await this.dedupCheck(apiPrefix, query, jobId);
         if (!hasValidationDlqDuplicate) {
+          const queryHashForDLQ = crypto.createHash('sha256').update(query).digest('hex');
           await addToDLQ(
             this.redis,
-            'danbooru',
+            apiPrefix,
             jobId,
-            validation.error.error,
-            query,
-          )
-        } else {
-          this.logger.warn(
-            `Skipping DLQ entry for validation error - recent duplicate found`,
-            jobId,
-          )
+            validationResult.error.error,
+            queryHashForDLQ,
+          );
         }
-        throw new Error(`Validation failed: ${validation.error.error}`)
+
+        throw new Error(`Validation failed: ${validationResult.error.error}`);
       }
 
-      // Process the request
-      await this.danbooruService.processRequest(jobId, query, clientId)
-      return { success: true }
+      // 5. Process job using extracted method
+      await this.processJob(jobId, query, clientId, apiPrefix);
+
+      this.logger.debug(`${apiPrefix} job ${jobId} processed successfully`);
+      return { success: true };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `${apiPrefix} job ${jobId} failed (query hash: ${queryHash}): ${errorMessage}`,
+        jobId,
+      );
+
+      // For unhandled errors, add to DLQ with hash
+      const queryHashForDLQ = crypto.createHash('sha256').update(query).digest('hex');
+      await addToDLQ(
+        this.redis,
+        apiPrefix,
+        jobId,
+        errorMessage,
+        queryHashForDLQ,
+      );
+
+      // Publish error response
+      const responseKey = getStreamName(apiPrefix, 'responses');
+      const errorResponse = JSON.stringify({
+        type: 'error',
+        jobId,
+        error: errorMessage,
+        timestamp: Date.now(),
+      });
+
+      await this.redis.xadd(responseKey, '*', 'jobId', jobId, 'data', errorResponse);
+      return { success: false, error: errorMessage };
+
     } finally {
       // Always release the query lock
-      await this.releaseLock(lockKey, jobId)
+      await this.releaseLock(lockKey, jobId);
     }
   }
 
