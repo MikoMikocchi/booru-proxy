@@ -7,17 +7,15 @@ export class CacheManagerService {
 
   constructor(private cacheService: CacheService) {}
 
-  async getOrFetch<T extends CacheableResponse>(
-    apiPrefix: string,
+  // Legacy Danbooru methods - exact original signatures for compatibility
+  async getCachedOrFetch<T extends CacheableResponse>(
     query: string,
     random: boolean,
     jobId: string,
-    fetchFn: () => Promise<T | null>,
-    customTtl?: number,
   ): Promise<T | null> {
+    const apiPrefix = 'danbooru'
     let cached: T | null = null
 
-    // Only cache non-random queries to avoid stale random results
     if (!random) {
       cached = await this.cacheService.getCachedResponse<T>(
         apiPrefix,
@@ -32,14 +30,52 @@ export class CacheManagerService {
       }
     }
 
-    // Cache miss or random query - fetch from source
+    this.logger.debug(`${apiPrefix} cache miss for job ${jobId}, needs fetch`)
+    return null // Original behavior: return null to trigger fetch in caller
+  }
+
+  async cacheResponseIfNeeded<T extends CacheableResponse>(
+    query: string,
+    response: T,
+    random: boolean,
+  ): Promise<void> {
+    const apiPrefix = 'danbooru'
+    if (!random && response) {
+      await this.cacheService.setCache(apiPrefix, query, response, random)
+    }
+  }
+
+  // Generic methods for multi-API support
+  async getOrFetchGeneric<T extends CacheableResponse>(
+    apiPrefix: string,
+    query: string,
+    random: boolean,
+    jobId: string,
+    fetchFn: () => Promise<T | null>,
+    customTtl?: number,
+  ): Promise<T | null> {
+    let cached: T | null = null
+
+    if (!random) {
+      cached = await this.cacheService.getCachedResponse<T>(
+        apiPrefix,
+        query,
+        random,
+      )
+      if (cached) {
+        this.logger.log(
+          `Cache hit for ${apiPrefix} job ${jobId}: query length ${query.length}`,
+        )
+        return cached
+      }
+    }
+
     this.logger.debug(
       `${apiPrefix} cache miss for job ${jobId}, fetching fresh data`,
     )
     const freshData = await fetchFn()
 
     if (freshData && !random) {
-      // Cache successful non-random responses
       await this.cacheService.setCache(
         apiPrefix,
         query,
@@ -53,7 +89,7 @@ export class CacheManagerService {
     return freshData
   }
 
-  async cacheResponseIfNeeded<T extends CacheableResponse>(
+  async cacheResponseIfNeededGeneric<T extends CacheableResponse>(
     apiPrefix: string,
     query: string,
     response: T,

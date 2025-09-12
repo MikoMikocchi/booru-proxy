@@ -1,5 +1,11 @@
-import { Injectable, Logger, Inject, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
-import { Processor } from '@nestjs/bullmq'
+import {
+  Injectable,
+  Logger,
+  Inject,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common'
+import { Processor, WorkerHost } from '@nestjs/bullmq'
 import { Job } from 'bullmq'
 import Redis from 'ioredis'
 import { plainToClass } from 'class-transformer'
@@ -9,17 +15,24 @@ import { DanbooruService } from '../../danbooru/danbooru.service'
 import { ValidationService } from '../../danbooru/validation.service'
 import { addToDLQ } from './utils/dlq.util'
 import { DEDUP_TTL_SECONDS } from '../../common/constants'
+import { ModuleRef } from '@nestjs/core'
 
 @Processor('danbooru-requests', { concurrency: 5 })
 @Injectable()
-export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
+export class RedisStreamConsumer
+  extends WorkerHost
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(RedisStreamConsumer.name)
+  private danbooruService: DanbooruService
+  private validationService: ValidationService
 
   constructor(
-    private readonly danbooruService: DanbooruService,
-    private readonly validationService: ValidationService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
-  ) {}
+    @Inject(ModuleRef) private moduleRef: ModuleRef,
+  ) {
+    super()
+  }
 
   async onModuleInit() {
     // Initialization logic if needed
@@ -50,6 +63,14 @@ export class RedisStreamConsumer implements OnModuleInit, OnModuleDestroy {
     if (result !== 'OK') {
       this.logger.warn(`Duplicate job ${jobId} detected, skipping`, jobId)
       return { skipped: true }
+    }
+
+    // Get services via ModuleRef to avoid circular dependency
+    if (!this.danbooruService) {
+      this.danbooruService = this.moduleRef.get(DanbooruService)
+    }
+    if (!this.validationService) {
+      this.validationService = this.moduleRef.get(ValidationService)
     }
 
     // Validation

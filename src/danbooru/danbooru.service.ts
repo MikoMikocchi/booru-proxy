@@ -19,14 +19,13 @@ import {
   DLQ_STREAM,
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
-import { CacheService } from './cache.service'
+import { CacheService } from '../common/cache/cache.service'
+import { CacheManagerService } from '../common/cache/cache-manager.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
-import { RedisStreamConsumer } from '../common/queues/redis-stream.consumer'
-import { CacheManagerService } from './cache-manager.service'
 import Redis from 'ioredis'
 
 @Injectable()
-export class DanbooruService implements OnModuleInit, OnModuleDestroy {
+export class DanbooruService {
   private readonly logger = new Logger(DanbooruService.name)
 
   constructor(
@@ -35,17 +34,8 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
     private readonly danbooruApiService: DanbooruApiService,
     private readonly cacheService: CacheService,
     private readonly rateLimitManagerService: RateLimitManagerService,
-    private readonly redisStreamConsumer: RedisStreamConsumer,
     private readonly cacheManagerService: CacheManagerService,
   ) {}
-
-  async onModuleInit() {
-    await this.redisStreamConsumer.onModuleInit()
-  }
-
-  onModuleDestroy() {
-    this.redisStreamConsumer.onModuleDestroy()
-  }
 
   async processRequest(
     jobId: string,
@@ -72,14 +62,20 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
         return rateCheck.error
       }
 
-      const responseOrNull = await this.cacheManagerService.getCachedOrFetch(
-        query,
-        random,
-        jobId,
-      )
-      if (responseOrNull) {
-        await this.publishResponse(jobId, responseOrNull)
-        return responseOrNull
+      // Direct cache check using CacheService for compatibility
+      let responseOrNull: DanbooruSuccessResponse | null = null
+      if (!random) {
+        responseOrNull =
+          await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
+            'danbooru',
+            query,
+            random,
+          )
+        if (responseOrNull) {
+          this.logger.log(`Cache hit for danbooru job ${jobId}`)
+          await this.publishResponse(jobId, responseOrNull)
+          return responseOrNull
+        }
       }
 
       const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
@@ -103,11 +99,15 @@ export class DanbooruService implements OnModuleInit, OnModuleDestroy {
       const responseData = this.buildSuccessResponse(post, jobId)
       await this.publishResponse(jobId, responseData)
 
-      await this.cacheManagerService.cacheResponseIfNeeded(
-        query,
-        responseData,
-        random,
-      )
+      // Direct cache set using CacheService for compatibility
+      if (!random) {
+        await this.cacheService.setCache(
+          'danbooru',
+          query,
+          responseData,
+          random,
+        )
+      }
 
       return responseData
     } catch (error: unknown) {

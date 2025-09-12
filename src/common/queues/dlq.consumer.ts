@@ -1,5 +1,5 @@
 import { Injectable, Logger, Inject } from '@nestjs/common'
-import { Processor, InjectQueue } from '@nestjs/bullmq'
+import { Processor, InjectQueue, WorkerHost } from '@nestjs/bullmq'
 import { Queue } from 'bullmq'
 import { Job } from 'bullmq'
 import Redis from 'ioredis'
@@ -8,13 +8,15 @@ import { moveToDeadQueue } from './utils/dlq.util'
 
 @Processor('danbooru-dlq', { concurrency: 3 })
 @Injectable()
-export class DlqConsumer {
+export class DlqConsumer extends WorkerHost {
   private readonly logger = new Logger(DlqConsumer.name)
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     @InjectQueue('danbooru-requests') private readonly mainQueue: Queue,
-  ) {}
+  ) {
+    super()
+  }
 
   async process(
     job: Job<{
