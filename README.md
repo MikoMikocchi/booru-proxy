@@ -28,6 +28,34 @@ A NestJS worker that processes image search queries to the Danbooru API via Redi
 - **Dependencies**: Axios for HTTP, ioredis for Redis, class-transformer/validator for DTOs.
 - **Configuration**: Env vars for Redis URL, Danbooru login/API key.
 
+## API Retry Strategy
+
+The application implements robust retry logic for API calls using `axios-retry` v4.5.0 with the following configuration:
+
+### Retry Conditions
+- **Network timeouts**: `ECONNABORTED` errors
+- **Rate limiting**: HTTP 429 status
+- **Server errors**: HTTP 5xx status codes (500-599)
+
+### Retry Configuration
+- **Maximum retries**: 3 attempts
+- **Backoff strategy**: Exponential backoff with jitter
+  - Delay formula: `2^retryCount * 1000 + random(0-1000)ms`
+  - Example delays: ~1-2s (1st), ~2-3s (2nd), ~4-5s (3rd)
+
+### 429 Rate Limit Handling
+- **Retry-After header**: When receiving 429, the service respects the `retry-after` header if present
+- **Fallback**: If no header, uses exponential backoff
+- **Logging**: Warns when respecting retry-after: "Respecting 429 retry-after header: X seconds"
+
+### Implementation
+- **BaseApiService**: Configures axios-retry in constructor after creating the Axios instance
+- **DanbooruApiService**: Extends BaseApiService, inherits retry logic
+- **Custom delay function**: Checks 429 response headers before applying backoff
+- **Inheritance**: All API services inherit this retry behavior
+
+This ensures reliable API communication even under high load or temporary rate limits from Danbooru.
+
 ## Quick Start
 
 1. Clone the repo and install dependencies:

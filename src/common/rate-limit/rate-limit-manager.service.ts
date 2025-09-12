@@ -23,6 +23,14 @@ interface RateLimitConfig {
 export class RateLimitManagerService {
   private readonly logger = new Logger(RateLimitManagerService.name)
 
+  /**
+   * Manages rate limiting for Danbooru API calls using the underlying RateLimiterService.
+   * - Integrates with config-based limits (e.g., DANBOORU_RATE_LIMIT_PER_MINUTE)
+   * - Supports clientId-based keys for per-user limits, falls back to global
+   * - Returns structured RateLimitResult for easy error handling in services
+   * - Uses INCR + EXPIRE strategy for atomicity and automatic cleanup
+   * - Ensures backward compatibility with existing DanbooruService integration
+   */
   constructor(
     private configService: ConfigService,
     private rateLimiterService: RateLimiterService,

@@ -1,9 +1,12 @@
 import { Injectable, Logger, Inject } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import axios, { AxiosInstance, AxiosError } from 'axios'
+import axiosRetry from 'axios-retry'
 import Redis from 'ioredis'
 import { ApiResponse, ApiConfig } from './base-api.interface'
 import { CacheService } from '../cache/cache.service'
+
+export type { ApiConfig, ApiResponse } from './base-api.interface'
 
 @Injectable()
 export abstract class BaseApiService {
@@ -16,37 +19,44 @@ export abstract class BaseApiService {
     @Inject(CacheService) protected cacheService?: CacheService, // Optional cache injection
   ) {
     this.httpClient = axios.create(this.getApiConfig())
-    this.setupRetryInterceptor()
+
+    // Configure axios-retry with exponential backoff and custom conditions
+    axiosRetry(this.httpClient, {
+      retries: this.getApiConfig().retryAttempts || 3,
+      retryDelay: (retryCount, error) => {
+        // Check for 429 retry-after header
+        if (
+          error.response?.status === 429 &&
+          error.response.headers['retry-after']
+        ) {
+          const retryAfter = parseInt(error.response.headers['retry-after'], 10)
+          if (!isNaN(retryAfter)) {
+            this.logger.warn(
+              `Respecting 429 retry-after header: ${retryAfter} seconds`,
+            )
+            return retryAfter * 1000 // Convert to ms
+          }
+        }
+        // Fallback to exponential backoff with jitter
+        return axiosRetry.exponentialDelay(retryCount) + Math.random() * 1000
+      },
+      retryCondition: error => {
+        const status = error.response?.status
+        return (
+          error.code === 'ECONNABORTED' ||
+          status === 429 ||
+          (typeof status === 'number' && status >= 500)
+        )
+      },
+    })
   }
 
   protected abstract getApiConfig(): ApiConfig
   protected abstract getBaseEndpoint(): string
 
+  // Legacy method - axios-retry now handles retries
   protected setupRetryInterceptor(): void {
-    this.httpClient.interceptors.response.use(
-      response => response,
-      async (error: AxiosError) => {
-        const maxRetries = this.getApiConfig().retryAttempts || 3
-        const config = error.config as any
-        config.retryCount = (config.retryCount || 0) + 1
-
-        if (
-          config.retryCount <= maxRetries &&
-          (error.code === 'ECONNABORTED' ||
-            (error.response?.status &&
-              (error.response.status >= 500 || error.response.status === 429)))
-        ) {
-          const delay =
-            Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000 // Exponential with jitter
-          this.logger.warn(
-            `Retrying ${this.constructor.name} request after ${delay}ms (attempt ${config.retryCount}/${maxRetries})`,
-          )
-          await new Promise(resolve => setTimeout(resolve, delay))
-          return this.httpClient(config)
-        }
-        return Promise.reject(error)
-      },
-    )
+    // No-op: axios-retry interceptor is configured in constructor
   }
 
   async fetchPosts(

@@ -11,6 +11,15 @@ interface RateLimitConfig {
 export class RateLimiterService {
   private readonly logger = new Logger(RateLimiterService.name)
 
+  /**
+   * Rate limiting strategy: Uses atomic INCR + EXPIRE via Lua script for performance and auto-cleanup.
+   * - INCR atomically increments the counter for the rate limit key
+   * - EXPIRE sets TTL on first increment to automatically clean up after windowSeconds
+   * - No manual cleanup needed (unlike ZSET approaches with ZREMRANGEBYSCORE)
+   * - Supports per-API limits with key format: rate:${apiPrefix}:${identifier}
+   * - Window types: minute (60s), hour (3600s), day (86400s)
+   * - Backward compatible with existing DanbooruService calls via RateLimitManagerService
+   */
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     private configService: ConfigService,
@@ -24,7 +33,7 @@ export class RateLimiterService {
   ): Promise<boolean> {
     const fullKey = `rate:${apiPrefix.toLowerCase()}:${key}`
 
-    // Use atomic INCR + EXPIRE for better performance than ZSET
+    // Atomic rate limit check using INCR + EXPIRE (preferred over ZSET for simplicity and auto-cleanup)
     const luaScript = `
       local key = KEYS[1]
       local limit = tonumber(ARGV[1])
@@ -34,7 +43,7 @@ export class RateLimiterService {
       -- Increment counter atomically
       local current = redis.call('INCR', key)
 
-      -- Set expiration if first request in window
+      -- Set expiration if first request in window (auto-cleanup after window ends)
       if current == 1 then
         redis.call('EXPIRE', key, window)
       end

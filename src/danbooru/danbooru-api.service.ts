@@ -1,110 +1,63 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import axios, { AxiosInstance, AxiosError } from 'axios'
 import { plainToClass } from 'class-transformer'
 import { validate, ValidationError } from 'class-validator'
 import { DanbooruPost } from './dto/danbooru-post.class'
 import { API_TIMEOUT_MS } from '../common/constants'
 import xss, { escapeHtml } from 'xss'
+import { BaseApiService, ApiConfig } from '../common/api/base-api.service'
 
 interface DanbooruApiResponse {
   data: DanbooruPost[]
 }
 
 @Injectable()
-export class DanbooruApiService {
-  private readonly logger = new Logger(DanbooruApiService.name)
-  private readonly axiosInstance: AxiosInstance
+export class DanbooruApiService extends BaseApiService {
   private readonly login: string
   private readonly apiKey: string
 
-  constructor(private configService: ConfigService) {
-    this.login = this.configService.get<string>('DANBOORU_LOGIN') ?? ''
-    this.apiKey = this.configService.get<string>('DANBOORU_API_KEY') ?? ''
+  constructor(configService: ConfigService) {
+    super(configService)
+    this.login = configService.get<string>('DANBOORU_LOGIN') ?? ''
+    this.apiKey = configService.get<string>('DANBOORU_API_KEY') ?? ''
     if (!this.login || !this.apiKey) {
       throw new Error('DANBOORU_LOGIN and DANBOORU_API_KEY must be set')
     }
+  }
 
-    this.axiosInstance = axios.create({
+  protected getApiConfig(): ApiConfig {
+    return {
       baseURL: 'https://danbooru.donmai.us',
       timeout: API_TIMEOUT_MS,
       auth: {
         username: this.login,
         password: this.apiKey,
       },
-    })
-
-    // Manual retry interceptor for network errors (up to 3 attempts)
-    this.axiosInstance.interceptors.response.use(
-      response => response,
-      async (error: AxiosError) => {
-        const maxRetries = 3
-        // Use any cast to access custom retryCount property
-        const config = error.config as any
-        const currentRetryCount = config?.retryCount || 0
-        if (
-          currentRetryCount < maxRetries &&
-          (error.code === 'ECONNABORTED' ||
-            (error.response?.status &&
-              (error.response.status >= 500 || error.response.status === 429)))
-        ) {
-          // Clone config to avoid mutation
-          const retryConfig = {
-            ...config,
-            retryCount: currentRetryCount + 1,
-          }
-          const delay = 1000 * (currentRetryCount + 1)
-          await new Promise(resolve => setTimeout(resolve, delay))
-          return this.axiosInstance(retryConfig)
-        }
-        return Promise.reject(error)
-      },
-    )
+      retryAttempts: 3, // Explicitly set for axios-retry
+    }
   }
 
-  async fetchPosts(
-    query: string,
-    limit: number = 1,
-    random: boolean = true,
-  ): Promise<DanbooruPost | null> {
-    this.logger.log(`Fetching posts for query: ${query}`)
-    try {
-      let url = `/posts.json?tags=${encodeURIComponent(query)}&limit=${limit}`
-      if (random) {
-        url += '&random=true'
-      }
-      const response = await this.axiosInstance.get<DanbooruApiResponse>(url)
+  protected getBaseEndpoint(): string {
+    return '/posts.json'
+  }
 
-      const apiResponse = response.data
-      const posts = apiResponse.data
-      if (!posts || posts.length === 0) {
-        return null
-      }
+  // Override sanitizeResponse for Danbooru-specific sanitization
+  protected sanitizeResponse(data: any): any {
+    const sanitized = super.sanitizeResponse(data)
 
-      // Runtime validation of first post
-      const rawPost = posts[0]
-      const post = plainToClass(DanbooruPost, rawPost)
-      const errors: ValidationError[] = await validate(post, {
-        forbidNonWhitelisted: true,
-      })
-      if (errors.length > 0) {
-        this.logger.warn(
-          `Validation errors in Danbooru response: ${JSON.stringify(errors)}`,
-        )
-        return null
-      }
-
-      // Sanitize tags (basic for now, improve later)
-      post.tag_string_general = this.sanitizeTags(post.tag_string_general)
-      post.tag_string_copyright = this.sanitizeTags(post.tag_string_copyright)
-
-      return post
-    } catch (error) {
-      this.logger.error(
-        `API error for query ${query}: ${(error as Error).message}`,
+    // Additional Danbooru-specific tag sanitization using xss library
+    if (sanitized.tag_string_general) {
+      sanitized.tag_string_general = this.sanitizeTags(
+        sanitized.tag_string_general,
       )
-      return null
     }
+    if (sanitized.tag_string_copyright) {
+      sanitized.tag_string_copyright = this.sanitizeTags(
+        sanitized.tag_string_copyright,
+      )
+    }
+
+    return sanitized
   }
 
   private sanitizeTags(tags: string): string {
@@ -117,5 +70,32 @@ export class DanbooruApiService {
       stripIgnoreTag: true,
       stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed'],
     })
+  }
+
+  async fetchPosts(
+    query: string,
+    limit: number = 1,
+    random: boolean = true,
+  ): Promise<DanbooruPost | null> {
+    // Use inherited fetchPosts from BaseApiService, which handles caching, logging, and sanitization
+    const postData = await super.fetchPosts(query, limit, random)
+
+    if (!postData) {
+      return null
+    }
+
+    // Additional Danbooru-specific validation
+    const post = plainToClass(DanbooruPost, postData)
+    const errors: ValidationError[] = await validate(post, {
+      forbidNonWhitelisted: true,
+    })
+    if (errors.length > 0) {
+      this.logger.warn(
+        `Validation errors in Danbooru response: ${JSON.stringify(errors)}`,
+      )
+      return null
+    }
+
+    return post
   }
 }
