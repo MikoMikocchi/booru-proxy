@@ -107,11 +107,7 @@ import { LockUtil } from './utils/lock.util'
         // Enhanced error handling for TLS
         redisClient.on('error', (error: Error) => {
           if (process.env.NODE_ENV !== 'test') {
-            if (error.message.includes('TLS') || error.message.includes('certificate')) {
-              console.error('Redis TLS Error:', error.message)
-            } else {
-              console.error('Redis Client Error:', error)
-            }
+            console.error('Redis Client Error:', error)
           }
         })
 
