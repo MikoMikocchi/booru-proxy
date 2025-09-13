@@ -154,7 +154,6 @@ describe('DlqConsumer', () => {
 
       await consumer['processDLQ'](apiName)
 
-       
       expect(mockRedis.xread).toHaveBeenCalledWith(
         'BLOCK',
         5000,
@@ -211,7 +210,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'API returned empty',
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
     })
 
@@ -256,7 +255,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Empty response',
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -299,7 +298,7 @@ describe('DlqConsumer', () => {
           'Job max-retry-job moved to dead queue (danbooru, max retries or permanent error)',
         ),
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -337,7 +336,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Auth failed',
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -368,7 +367,7 @@ describe('DlqConsumer', () => {
           'Invalid DLQ entry 1640995200000-0 for danbooru, deleting',
         ),
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
     })
@@ -410,7 +409,7 @@ describe('DlqConsumer', () => {
       await consumer['processDLQ'](apiName)
 
       expect(mockMoveToDeadQueue).toHaveBeenCalledTimes(2)
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledTimes(2)
       expect(mockLogger.error).toHaveBeenCalledTimes(2)
       expect(mockLogger.warn).toHaveBeenCalledTimes(2)
@@ -476,7 +475,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Retry skipped due to privacy masking (attempt 1)',
       )
-       
+
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockRetryFromDLQ).not.toHaveBeenCalled()
     })
@@ -493,7 +492,7 @@ describe('DlqConsumer', () => {
         ),
       )
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
-       
+
       expect(mockRedis.xdel).not.toHaveBeenCalled()
     })
   })

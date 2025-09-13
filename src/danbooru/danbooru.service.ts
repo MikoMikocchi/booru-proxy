@@ -53,7 +53,10 @@ export class DanbooruService {
 
     const lockContext = await this.acquireQueryLock(query, jobId)
     if (!lockContext) {
-      return this.handleDuplicateProcessing(jobId, 'Query is currently being processed')
+      return this.handleDuplicateProcessing(
+        jobId,
+        'Query is currently being processed',
+      )
     }
 
     try {
@@ -68,7 +71,13 @@ export class DanbooruService {
         return rateCheck.error
       }
 
-      let response = await this.getOrFetchFromCache(query, random, limit, tags, jobId)
+      let response = await this.getOrFetchFromCache(
+        query,
+        random,
+        limit,
+        tags,
+        jobId,
+      )
       if (!response) {
         response = await this.fetchAndBuildResponse(query, random, limit, jobId)
         await this.cacheService.setCache(
@@ -99,13 +108,22 @@ export class DanbooruService {
    * @param jobId - Job ID for logging
    * @returns Lock context or null if not acquired
    */
-  private async acquireQueryLock(query: string, jobId: string): Promise<{ lockKey: string; lockValue: string } | null> {
+  private async acquireQueryLock(
+    query: string,
+    jobId: string,
+  ): Promise<{ lockKey: string; lockValue: string } | null> {
     const queryHash = crypto.createHash('sha256').update(query).digest('hex')
     const lockKey = `lock:query:${queryHash}`
 
-    const lockValue = await this.lockUtil.acquireLock(lockKey, QUERY_LOCK_TIMEOUT_SECONDS)
+    const lockValue = await this.lockUtil.acquireLock(
+      lockKey,
+      QUERY_LOCK_TIMEOUT_SECONDS,
+    )
     if (!lockValue) {
-      this.logger.warn(`Query lock not acquired for job ${jobId} (already processing)`, jobId)
+      this.logger.warn(
+        `Query lock not acquired for job ${jobId} (already processing)`,
+        jobId,
+      )
       return null
     }
 
@@ -118,8 +136,15 @@ export class DanbooruService {
    * @param errorMsg - Error message for response
    * @returns Error response
    */
-  private async handleDuplicateProcessing(jobId: string, errorMsg: string): Promise<DanbooruErrorResponse> {
-    const error: DanbooruErrorResponse = { type: 'error', jobId, error: errorMsg }
+  private async handleDuplicateProcessing(
+    jobId: string,
+    errorMsg: string,
+  ): Promise<DanbooruErrorResponse> {
+    const error: DanbooruErrorResponse = {
+      type: 'error',
+      jobId,
+      error: errorMsg,
+    }
     await this.publishResponse(jobId, error)
     return error
   }
@@ -129,7 +154,11 @@ export class DanbooruService {
    * @param query - Query string
    * @returns Params object with random, limit, tags
    */
-  private prepareRequestParams(query: string): { random: boolean; limit: number; tags: string[] } {
+  private prepareRequestParams(query: string): {
+    random: boolean
+    limit: number
+    tags: string[]
+  } {
     return {
       random: this.configService.get<boolean>('DANBOORU_RANDOM') || true,
       limit: this.configService.get<number>('DANBOORU_LIMIT') || 1,
@@ -154,13 +183,14 @@ export class DanbooruService {
     tags: string[],
     jobId: string,
   ): Promise<DanbooruSuccessResponse | null> {
-    const cached = await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
-      'danbooru',
-      query,
-      random,
-      limit,
-      tags,
-    )
+    const cached =
+      await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
+        'danbooru',
+        query,
+        random,
+        limit,
+        tags,
+      )
     if (cached) {
       this.logger.log(`Cache hit for danbooru job ${jobId}`)
       return cached
@@ -198,22 +228,34 @@ export class DanbooruService {
    * @param random - Random flag
    * @param jobId - Job ID for logging
    */
-  private async performCacheInvalidation(tags: string[], random: boolean, jobId: string): Promise<void> {
+  private async performCacheInvalidation(
+    tags: string[],
+    random: boolean,
+    jobId: string,
+  ): Promise<void> {
     if (tags.length > 0) {
       for (const tag of tags) {
         const escapedTag = tag.replace(/[[\]*?^$.\\]/g, '\\$&')
         const tagPattern = DANBOORU_TAG_PATTERN.replace('*', escapedTag)
         const deleted = await this.cacheService.invalidateCache(tagPattern)
         if (deleted > 0) {
-          this.logger.debug(`Invalidated ${deleted} tag-specific caches for tag: ${tag}`, jobId)
+          this.logger.debug(
+            `Invalidated ${deleted} tag-specific caches for tag: ${tag}`,
+            jobId,
+          )
         }
       }
     }
 
     if (random) {
-      const randomDeleted = await this.cacheService.invalidateCache(DANBOORU_RANDOM_PATTERN)
+      const randomDeleted = await this.cacheService.invalidateCache(
+        DANBOORU_RANDOM_PATTERN,
+      )
       if (randomDeleted > 0) {
-        this.logger.debug(`Invalidated ${randomDeleted} random query caches for freshness`, jobId)
+        this.logger.debug(
+          `Invalidated ${randomDeleted} random query caches for freshness`,
+          jobId,
+        )
       }
     }
   }
@@ -225,11 +267,19 @@ export class DanbooruService {
    * @param error - Error object
    * @returns Error response
    */
-  private async handleErrorAndPublish(jobId: string, query: string, error: unknown): Promise<DanbooruErrorResponse> {
+  private async handleErrorAndPublish(
+    jobId: string,
+    query: string,
+    error: unknown,
+  ): Promise<DanbooruErrorResponse> {
     const errorMsg = error instanceof Error ? error.message : String(error)
     this.logger.error(`Error processing job ${jobId}: ${errorMsg}`, jobId)
 
-    const response: DanbooruErrorResponse = { type: 'error', jobId, error: errorMsg }
+    const response: DanbooruErrorResponse = {
+      type: 'error',
+      jobId,
+      error: errorMsg,
+    }
     await this.publishResponse(jobId, response)
     await addToDLQ(this.redis, 'danbooru', jobId, errorMsg, query, 0)
 
@@ -241,10 +291,18 @@ export class DanbooruService {
    * @param lockContext - Lock key/value
    * @param jobId - Job ID for logging
    */
-  private async releaseQueryLock(lockContext: { lockKey: string; lockValue: string }, jobId: string): Promise<void> {
-    const released = await this.lockUtil.releaseLock(lockContext.lockKey, lockContext.lockValue)
+  private async releaseQueryLock(
+    lockContext: { lockKey: string; lockValue: string },
+    jobId: string,
+  ): Promise<void> {
+    const released = await this.lockUtil.releaseLock(
+      lockContext.lockKey,
+      lockContext.lockValue,
+    )
     if (released) {
-      this.logger.debug(`Query lock released for ${lockContext.lockKey} by job ${jobId}`)
+      this.logger.debug(
+        `Query lock released for ${lockContext.lockKey} by job ${jobId}`,
+      )
     }
   }
 
