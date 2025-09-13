@@ -101,7 +101,10 @@
     "@nestjs/terminus": "^11.0.0"
   },
   "lint-staged": {
-    "src/**/*.ts": "prettier --check",
-    "test/**/*.ts": "prettier --check"
+    "*.ts": [
+      "eslint --fix",
+      "prettier --check"
+    ],
+    "*.spec.ts": "jest --findRelatedTests --bail"
   }
 }
