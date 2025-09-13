@@ -1,6 +1,19 @@
 import { Injectable, Logger, Inject } from '@nestjs/common'
 import { v4 as uuidv4 } from 'uuid'
-import Redis from 'ioredis'
+import { Redis as RedisType } from 'ioredis'
+
+interface ExtendedRedis extends RedisType {
+  defineCommand(
+    name: string,
+    definition: { numberOfKeys: number; lua: string },
+  ): ExtendedRedis
+  extendLock(
+    key: string,
+    lockValue: string,
+    ttlSeconds: number,
+  ): Promise<number>
+  releaseLock(key: string, lockValue: string): Promise<number>
+}
 
 @Injectable()
 export class LockUtil {
@@ -24,14 +37,14 @@ export class LockUtil {
     end
   `
 
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
+  constructor(@Inject('REDIS_CLIENT') private readonly redis: ExtendedRedis) {
     // Define Lua scripts as commands for ioredis
-    ;(this.redis as any).defineCommand('extendLock', {
+    this.redis.defineCommand('extendLock', {
       numberOfKeys: 1,
       lua: this.extendLockScript,
     })
 
-    ;(this.redis as any).defineCommand('releaseLock', {
+    this.redis.defineCommand('releaseLock', {
       numberOfKeys: 1,
       lua: this.releaseLockScript,
     })
@@ -55,11 +68,7 @@ export class LockUtil {
     ttlSeconds: number,
   ): Promise<boolean> {
     try {
-      const result = await (this.redis as any).extendLock(
-        key,
-        lockValue,
-        ttlSeconds,
-      )
+      const result = await this.redis.extendLock(key, lockValue, ttlSeconds)
       const success = result === 1
 
       if (success) {
@@ -69,15 +78,17 @@ export class LockUtil {
       }
 
       return success
-    } catch (error) {
-      this.logger.error(`Error extending lock for key ${key}: ${error.message}`)
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+      this.logger.error(`Error extending lock for key ${key}: ${errorMessage}`)
       return false
     }
   }
 
   async releaseLock(key: string, lockValue: string): Promise<boolean> {
     try {
-      const result = await (this.redis as any).releaseLock(key, lockValue)
+      const result = await this.redis.releaseLock(key, lockValue)
       const success = result === 1
 
       if (success) {
@@ -87,8 +98,10 @@ export class LockUtil {
       }
 
       return success
-    } catch (error) {
-      this.logger.error(`Error releasing lock for key ${key}: ${error.message}`)
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+      this.logger.error(`Error releasing lock for key ${key}: ${errorMessage}`)
       return false
     }
   }
@@ -114,24 +127,29 @@ export class LockUtil {
       }
 
       // Start heartbeat to extend lock periodically
-      heartbeatInterval = setInterval(async () => {
+      heartbeatInterval = setInterval(() => {
         if (lockValue) {
-          const extended = await this.extendLock(key, lockValue, ttlSeconds)
-          if (!extended) {
-            this.logger.warn(
-              `Heartbeat failed for lock: ${key}, operation may be interrupted`,
-            )
-            // Note: We don't clear interval here as operation might still complete
-          }
+          this.extendLock(key, lockValue, ttlSeconds).catch(
+            (error: unknown) => {
+              const errorMessage =
+                error instanceof Error ? error.message : String(error)
+              this.logger.warn(
+                `Heartbeat failed for lock: ${key}, operation may be interrupted: ${errorMessage}`,
+              )
+            },
+          )
+          // Note: We don't clear interval here as operation might still complete
         }
       }, heartbeatIntervalMs)
 
       // Execute the main operation
       const result = await operation()
       return result
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
       this.logger.error(
-        `Error in locked operation for key ${key}: ${error.message}`,
+        `Error in locked operation for key ${key}: ${errorMessage}`,
       )
       throw error
     } finally {

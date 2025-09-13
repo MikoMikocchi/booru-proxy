@@ -9,7 +9,7 @@ export function parseRedisUrl(redisUrl: string): URL {
       )
     }
     return url
-  } catch (error) {
+  } catch {
     throw new Error('Invalid Redis URL format')
   }
 }

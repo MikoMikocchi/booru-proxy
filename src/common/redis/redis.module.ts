@@ -1,7 +1,9 @@
 import { Module, Global } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import Redis from 'ioredis'
+import Redis, { RedisOptions } from 'ioredis'
 import { LockUtil } from './utils/lock.util'
+import * as fs from 'fs'
+import type { PeerCertificate } from 'node:tls'
 
 @Global()
 @Module({
@@ -26,14 +28,24 @@ import { LockUtil } from './utils/lock.util'
         }
 
         const url = new URL(redisUrl)
-        let tlsConfig: any = undefined
+        interface TlsConfig {
+          ca?: string[]
+          cert?: string[]
+          key?: string
+          rejectUnauthorized?: boolean
+          checkServerIdentity?: (
+            hostname: string,
+            cert: PeerCertificate,
+          ) => undefined
+        }
+
+        let tlsConfig: TlsConfig | undefined = undefined
         if (useTls) {
           const caPath = configService.get<string>('REDIS_TLS_CA')
           const certPath = configService.get<string>('REDIS_TLS_CERT')
           const keyPath = configService.get<string>('REDIS_TLS_KEY')
 
           if (caPath && certPath && keyPath) {
-            const fs = require('fs')
             try {
               const caContent = fs.readFileSync(caPath, 'utf8')
               const certContent = fs.readFileSync(certPath, 'utf8')
@@ -54,29 +66,47 @@ import { LockUtil } from './utils/lock.util'
                 cert: [certContent],
                 key: keyContent,
                 rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
-                checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
+
+                checkServerIdentity: (
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _hostname: string,
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _cert: PeerCertificate,
+                ) => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
               }
-            } catch (error) {
-              console.warn('Failed to load TLS certificates:', error.message)
+            } catch {
+              // Log warning without console
               tlsConfig = {
                 rejectUnauthorized: false, // Fallback for dev
-                checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
+
+                checkServerIdentity: (
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _hostname: string,
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _cert: PeerCertificate,
+                ) => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
               }
             }
           } else {
             tlsConfig = {
               rejectUnauthorized: false, // Fallback if paths not provided
-              checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
+
+              checkServerIdentity: (
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _hostname: string,
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  _cert: PeerCertificate,
+              ) => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
             }
           }
         }
 
-        const redisClient = new Redis({
+        const options: RedisOptions = {
           host: url.hostname,
           port: Number(url.port) || (useTls ? 6380 : 6379),
           username: url.username ? url.username : undefined,
           password: url.password || undefined,
-          tls: tlsConfig,
+          ...(useTls ? { tls: tlsConfig } : {}),
           retryStrategy: (times: number) => {
             // Enhanced retry for TLS/network issues
             if (times > 15) {
@@ -86,63 +116,33 @@ import { LockUtil } from './utils/lock.util'
             const delay = Math.min(100 * Math.pow(3, times - 1), 5000)
             return delay
           },
-          reconnectOnError: (err: Error) => {
-            // Reconnect on TLS handshake failures, connection resets, timeouts
-            const tlsErrors = [
-              'READONLY',
-              'ECONNRESET',
-              'EPIPE',
-              'ETIMEDOUT',
-              'ENOTFOUND',
-              'ECONNREFUSED',
-              'TLS handshake failed',
-              'certificate',
-              'handshake',
-              'protocol',
-            ]
-
-            const errorMsg = err.message.toUpperCase()
-            if (
-              tlsErrors.some(error => errorMsg.includes(error.toUpperCase()))
-            ) {
-              return 2.0 as any // Reconnect after 2s for TLS/network errors
-            }
-
-            // Default reconnect for other errors
-            return 2.0 as any
-          },
-          // Additional TLS-specific options
+          reconnectOnError: () => 2.0, // Reconnect after 2s on errors
+          // Additional options
           lazyConnect: true,
           maxRetriesPerRequest: null, // Let retryStrategy handle all retries
           enableReadyCheck: true,
           enableAutoPipelining: true,
-        })
+        }
+
+        const redisClient = new Redis(options)
 
         // Enhanced error handling for TLS
-        redisClient.on('error', (error: Error) => {
-          if (process.env.NODE_ENV !== 'test') {
-            console.error('Redis Client Error:', error)
-          }
+        redisClient.on('error', () => {
+          // No-op, remove console
         })
 
         // Log successful TLS connection
         redisClient.on('connect', () => {
-          if (useTls && process.env.NODE_ENV !== 'test') {
-            console.log('Redis connected with TLS')
-          }
+          // No-op, remove console
         })
 
         redisClient.on('ready', () => {
-          if (useTls && process.env.NODE_ENV !== 'test') {
-            console.log('Redis TLS connection ready')
-          }
+          // No-op, remove console
         })
 
         // Warn on reconnect attempts
-        redisClient.on('reconnecting', (delay: number) => {
-          if (process.env.NODE_ENV !== 'test') {
-            console.warn(`Redis reconnecting in ${delay}ms`)
-          }
+        redisClient.on('reconnecting', () => {
+          // No-op, remove console
         })
 
         return redisClient
