@@ -38,5 +38,5 @@ export const DANBOORU_ALL_PATTERN = `${CACHE_PREFIX}:${DANBOORU_API_PREFIX}:*`
  * @returns Stream name in format: `${apiPrefix}:${type}`
  */
 export function getStreamName(apiPrefix: string, type: string): string {
-  return `${apiPrefix}:${type}`;
+  return `${apiPrefix}:${type}`
 }

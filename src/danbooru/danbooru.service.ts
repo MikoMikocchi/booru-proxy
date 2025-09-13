@@ -68,7 +68,10 @@ export class DanbooruService {
 
     try {
       // Try to acquire lock using LockUtil
-      lockValue = await this.lockUtil.acquireLock(lockKey, QUERY_LOCK_TIMEOUT_SECONDS)
+      lockValue = await this.lockUtil.acquireLock(
+        lockKey,
+        QUERY_LOCK_TIMEOUT_SECONDS,
+      )
       if (!lockValue) {
         this.logger.warn(
           `Additional query lock not acquired for job ${jobId} (already processing)`,
@@ -86,7 +89,11 @@ export class DanbooruService {
       // Start heartbeat to extend lock every 10s
       heartbeatInterval = setInterval(async () => {
         if (lockValue) {
-          const extended = await this.lockUtil.extendLock(lockKey, lockValue, QUERY_LOCK_TIMEOUT_SECONDS)
+          const extended = await this.lockUtil.extendLock(
+            lockKey,
+            lockValue,
+            QUERY_LOCK_TIMEOUT_SECONDS,
+          )
           if (!extended) {
             this.logger.warn(`Failed to extend lock for ${lockKey} in service`)
           }

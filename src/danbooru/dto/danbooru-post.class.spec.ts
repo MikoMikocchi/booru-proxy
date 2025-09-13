@@ -100,7 +100,9 @@ describe('DanbooruPost', () => {
     const errors = await validate(post)
 
     expect(errors.length).toBeGreaterThan(0)
-    const tagErrors = errors.find(error => error.property === 'tag_string_general')
+    const tagErrors = errors.find(
+      error => error.property === 'tag_string_general',
+    )
     expect(tagErrors).toBeDefined()
     expect(tagErrors!.constraints!.matches).toBeDefined()
   })
@@ -121,7 +123,9 @@ describe('DanbooruPost', () => {
     const errors = await validate(post)
 
     expect(errors.length).toBeGreaterThan(0)
-    const lengthErrors = errors.find(error => error.property === 'tag_string_general')
+    const lengthErrors = errors.find(
+      error => error.property === 'tag_string_general',
+    )
     expect(lengthErrors).toBeDefined()
     expect(lengthErrors!.constraints!.maxLength).toBeDefined()
   })
@@ -182,7 +186,9 @@ describe('DanbooruPost', () => {
 
     expect(errors.length).toBe(0)
     expect(post.created_at).toBeInstanceOf(Date)
-    expect(post.created_at.getTime()).toBe(new Date('2023-01-01T12:00:00Z').getTime())
+    expect(post.created_at.getTime()).toBe(
+      new Date('2023-01-01T12:00:00Z').getTime(),
+    )
   })
 
   it('should fail validation for invalid date string', async () => {
@@ -245,7 +251,9 @@ describe('DanbooruPost', () => {
     const errors = await validate(post)
 
     expect(errors.length).toBe(0)
-    expect(post.large_file_url).toBe('https://danbooru.donmai.us/data/__large.jpg')
+    expect(post.large_file_url).toBe(
+      'https://danbooru.donmai.us/data/__large.jpg',
+    )
     expect(post.tag_string_artist).toBe('artist1')
     expect(post.tag_string_character).toBe('character1')
     expect(post.source).toBe('https://example.com')

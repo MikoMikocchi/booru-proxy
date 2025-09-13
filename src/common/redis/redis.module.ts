@@ -19,7 +19,9 @@ import { LockUtil } from './utils/lock.util'
           const url = new URL(baseUrl)
           const password =
             url.password || configService.get<string>('REDIS_PASSWORD') || ''
-          const authPart = url.username ? `${url.username}:${password}` : `:${password}`
+          const authPart = url.username
+            ? `${url.username}:${password}`
+            : `:${password}`
           redisUrl = `rediss://${authPart}@${url.host}`
         }
 
@@ -38,10 +40,12 @@ import { LockUtil } from './utils/lock.util'
               const keyContent = fs.readFileSync(keyPath, 'utf8')
 
               // Validate PEM format
-              if (!caContent.includes('-----BEGIN CERTIFICATE-----') ||
-                  !certContent.includes('-----BEGIN CERTIFICATE-----') ||
-                  !keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
-                  !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+              if (
+                !caContent.includes('-----BEGIN CERTIFICATE-----') ||
+                !certContent.includes('-----BEGIN CERTIFICATE-----') ||
+                (!keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
+                  !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----'))
+              ) {
                 throw new Error('Invalid PEM format in certificate files')
               }
 
@@ -85,13 +89,22 @@ import { LockUtil } from './utils/lock.util'
           reconnectOnError: (err: Error) => {
             // Reconnect on TLS handshake failures, connection resets, timeouts
             const tlsErrors = [
-              'READONLY', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT',
-              'ENOTFOUND', 'ECONNREFUSED', 'TLS handshake failed',
-              'certificate', 'handshake', 'protocol'
+              'READONLY',
+              'ECONNRESET',
+              'EPIPE',
+              'ETIMEDOUT',
+              'ENOTFOUND',
+              'ECONNREFUSED',
+              'TLS handshake failed',
+              'certificate',
+              'handshake',
+              'protocol',
             ]
 
             const errorMsg = err.message.toUpperCase()
-            if (tlsErrors.some(error => errorMsg.includes(error.toUpperCase()))) {
+            if (
+              tlsErrors.some(error => errorMsg.includes(error.toUpperCase()))
+            ) {
               return 2.0 as any // Reconnect after 2s for TLS/network errors
             }
 

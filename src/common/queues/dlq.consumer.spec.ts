@@ -84,9 +84,7 @@ describe('DlqConsumer', () => {
           )
           const hasRecentDuplicate = recentDuplicates.some((entry: any) =>
             entry[1].some(
-              (field: any) =>
-                field[0] === 'query' &&
-                field[1] === query, // Compare actual query, not hash
+              (field: any) => field[0] === 'query' && field[1] === query, // Compare actual query, not hash
             ),
           )
 

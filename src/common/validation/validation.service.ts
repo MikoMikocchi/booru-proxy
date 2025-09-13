@@ -88,7 +88,7 @@ export class ValidationService {
     }
 
     this.logger.debug(`Validation successful for ${apiPrefix} job ${jobId}`)
-    return { valid: true, dto: requestDto as T }
+    return { valid: true, dto: requestDto }
   }
 
   private async validateRateLimit(

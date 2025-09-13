@@ -70,19 +70,19 @@ export class DanbooruApiService extends BaseApiService {
       'fav_count',
       'comment_count',
       'updater_id',
-    ];
+    ]
 
     stringFields.forEach(field => {
       if (sanitized[field] && typeof sanitized[field] === 'string') {
-        sanitized[field] = this.sanitizeStringField(sanitized[field]);
+        sanitized[field] = this.sanitizeStringField(sanitized[field])
       }
-    });
+    })
 
-    return sanitized;
+    return sanitized
   }
 
   private sanitizeStringField(str: string): string {
-    if (!str) return '';
+    if (!str) return ''
 
     // Use xss library for comprehensive sanitization
     // Empty whitelist strips all tags, escapeHtml prevents attribute injection
@@ -90,8 +90,16 @@ export class DanbooruApiService extends BaseApiService {
       whiteList: {}, // No allowed tags - complete stripping
       escapeHtml, // Escape HTML entities
       stripIgnoreTag: true,
-      stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'img'],
-    });
+      stripIgnoreTagBody: [
+        'script',
+        'style',
+        'iframe',
+        'object',
+        'embed',
+        'svg',
+        'img',
+      ],
+    })
   }
 
   async fetchPosts(

@@ -17,13 +17,20 @@ import { MemcachedBackendService } from './backends/memcached-backend.service'
     {
       provide: 'CACHE_BACKEND',
       useFactory: (configService: ConfigService) => {
-        const backend = configService.get('CACHE_BACKEND') || 'redis';
-        return backend === 'memcached' ? MemcachedBackendService : RedisBackendService;
+        const backend = configService.get('CACHE_BACKEND') || 'redis'
+        return backend === 'memcached'
+          ? MemcachedBackendService
+          : RedisBackendService
       },
       inject: [ConfigService],
     },
   ],
-  exports: [CacheService, CacheManagerService, 'CACHE_BACKEND', RedisBackendService],
+  exports: [
+    CacheService,
+    CacheManagerService,
+    'CACHE_BACKEND',
+    RedisBackendService,
+  ],
 })
 export class CacheModule {
   static forRootAsync() {
@@ -32,6 +39,6 @@ export class CacheModule {
       global: true,
       imports: [ConfigModule],
       exports: [CacheModule],
-    };
+    }
   }
 }

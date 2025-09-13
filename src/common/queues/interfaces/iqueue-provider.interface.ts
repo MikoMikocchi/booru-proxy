@@ -1,13 +1,13 @@
 export interface QueueConfig {
-  name: string;
-  prefix: string;
-  concurrency?: number;
-  removeOnComplete?: boolean;
-  removeOnFail?: boolean;
-  defaultJobOptions?: any;
+  name: string
+  prefix: string
+  concurrency?: number
+  removeOnComplete?: boolean
+  removeOnFail?: boolean
+  defaultJobOptions?: any
 }
 
 export interface IQueueProvider {
-  getQueueConfig(): QueueConfig;
-  getStreamNames(): string[];
+  getQueueConfig(): QueueConfig
+  getStreamNames(): string[]
 }

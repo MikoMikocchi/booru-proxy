@@ -112,7 +112,7 @@ describe('ValidationService', () => {
         validJobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (result.valid) {
         expect(result.valid).toBe(true)
@@ -145,7 +145,7 @@ describe('ValidationService', () => {
         validJobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (!result.valid) {
         expect(result.valid).toBe(false)
@@ -183,7 +183,7 @@ describe('ValidationService', () => {
         validJobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (!result.valid) {
         expect(result.valid).toBe(false)
@@ -215,7 +215,7 @@ describe('ValidationService', () => {
         validJobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (!result.valid) {
         expect(result.valid).toBe(false)
@@ -248,7 +248,7 @@ describe('ValidationService', () => {
         validJobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (!result.valid) {
         expect(result.valid).toBe(false)
@@ -283,7 +283,7 @@ describe('ValidationService', () => {
         noJobIdData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (result.valid) {
         expect(result.valid).toBe(true)
@@ -315,7 +315,7 @@ describe('ValidationService', () => {
         noClientIdData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (result.valid) {
         expect(result.valid).toBe(true)
@@ -549,7 +549,7 @@ describe('ValidationService', () => {
         fullJobData,
         TestDto,
         fullConfig,
-      )) as ValidationResult<TestDto>
+      ))
 
       if (result.valid) {
         // Should pass all validation steps
@@ -588,7 +588,7 @@ describe('ValidationService', () => {
 
       const result = (await service.validateRequest(failingJobData, TestDto, {
         apiPrefix: 'danbooru',
-      })) as ValidationResult<TestDto>
+      }))
 
       if (!result.valid) {
         expect(result.valid).toBe(false)
@@ -616,7 +616,7 @@ describe('ValidationService', () => {
         jobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
       if (!dtoResult.valid) {
         expect(dtoResult.error).toMatchObject({
           type: 'error',
@@ -637,7 +637,7 @@ describe('ValidationService', () => {
         jobData,
         TestDto,
         config,
-      )) as ValidationResult<TestDto>
+      ))
       if (!rateResult.valid) {
         expect(rateResult.error).toMatchObject({
           type: 'error',

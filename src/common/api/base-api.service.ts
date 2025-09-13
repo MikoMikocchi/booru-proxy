@@ -166,50 +166,61 @@ export abstract class BaseApiService {
    * @param random - Optional flag to target random vs deterministic caches
    * @returns Number of invalidated cache entries
    */
-  async invalidateCache(apiPrefix: string, query?: string, random?: boolean): Promise<number> {
+  async invalidateCache(
+    apiPrefix: string,
+    query?: string,
+    random?: boolean,
+  ): Promise<number> {
     if (!this.cacheService) {
-      this.logger.warn(`${this.constructor.name}: CacheService not available for invalidation`);
-      return 0;
+      this.logger.warn(
+        `${this.constructor.name}: CacheService not available for invalidation`,
+      )
+      return 0
     }
 
-    let deletedCount = 0;
+    let deletedCount = 0
 
     // Generate dynamic cache patterns based on apiPrefix
-    const cachePrefix = 'cache'; // From constants.CACHE_PREFIX
-    const basePattern = `${cachePrefix}:${apiPrefix}:*`;
+    const cachePrefix = 'cache' // From constants.CACHE_PREFIX
+    const basePattern = `${cachePrefix}:${apiPrefix}:*`
 
     // 1. Always invalidate all API-specific caches if no query provided
     if (!query) {
-      deletedCount += await this.cacheService.invalidate(basePattern);
-      this.logger.debug(`${this.constructor.name}: Invalidated all caches for ${apiPrefix} (${deletedCount} keys)`);
-      return deletedCount;
+      deletedCount += await this.cacheService.invalidate(basePattern)
+      this.logger.debug(
+        `${this.constructor.name}: Invalidated all caches for ${apiPrefix} (${deletedCount} keys)`,
+      )
+      return deletedCount
     }
 
     // 2. Query-specific invalidation with optional random filtering
-    const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ');
-    const queryHash = require('crypto').createHash('md5').update(normalizedQuery).digest('hex');
+    const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ')
+    const queryHash = require('crypto')
+      .createHash('md5')
+      .update(normalizedQuery)
+      .digest('hex')
 
     // Build specific pattern for this query
-    let queryPattern = `${cachePrefix}:${apiPrefix}:posts:${queryHash}`;
+    let queryPattern = `${cachePrefix}:${apiPrefix}:posts:${queryHash}`
 
     if (random !== undefined) {
-      queryPattern += `:random=${random ? 1 : 0}`;
+      queryPattern += `:random=${random ? 1 : 0}`
     }
 
     // Add wildcard for limit and tag suffixes
-    queryPattern += `:*`;
+    queryPattern += `:*`
 
-    deletedCount += await this.cacheService.invalidate(queryPattern);
+    deletedCount += await this.cacheService.invalidate(queryPattern)
 
     // 3. Also invalidate broader API posts pattern for related caches
-    const apiPostsPattern = `${cachePrefix}:${apiPrefix}:posts:*`;
-    deletedCount += await this.cacheService.invalidate(apiPostsPattern);
+    const apiPostsPattern = `${cachePrefix}:${apiPrefix}:posts:*`
+    deletedCount += await this.cacheService.invalidate(apiPostsPattern)
 
     this.logger.debug(
-      `${this.constructor.name}: Invalidated ${deletedCount} cache entries for ${apiPrefix} query "${normalizedQuery.substring(0, 20)}..." (random: ${random})`
-    );
+      `${this.constructor.name}: Invalidated ${deletedCount} cache entries for ${apiPrefix} query "${normalizedQuery.substring(0, 20)}..." (random: ${random})`,
+    )
 
-    return deletedCount;
+    return deletedCount
   }
 
   protected sanitizeResponse(data: any): any {

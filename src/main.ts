@@ -48,7 +48,8 @@ async function bootstrap() {
   try {
     const configService = new ConfigService()
     const redisPassword = configService.get<string>('REDIS_PASSWORD')
-    const redisUrlRaw = configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
+    const redisUrlRaw =
+      configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
     const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
     console.log('DEBUG: REDIS_PASSWORD=', redisPassword)
     console.log('DEBUG: REDIS_URL raw=', redisUrlRaw)
@@ -61,7 +62,16 @@ async function bootstrap() {
     const username = parsedUrl.username || undefined
     const password = parsedUrl.password || redisPassword || undefined
 
-    console.log('DEBUG: Parsed - host:', host, 'port:', port, 'username:', username, 'useTls:', useTls)
+    console.log(
+      'DEBUG: Parsed - host:',
+      host,
+      'port:',
+      port,
+      'username:',
+      username,
+      'useTls:',
+      useTls,
+    )
 
     let tlsConfig: any = undefined
     if (useTls) {
@@ -77,10 +87,12 @@ async function bootstrap() {
           const keyContent = fs.readFileSync(keyPath, 'utf8')
 
           // Validate PEM format
-          if (!caContent.includes('-----BEGIN CERTIFICATE-----') ||
-              !certContent.includes('-----BEGIN CERTIFICATE-----') ||
-              (!keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
-               !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----'))) {
+          if (
+            !caContent.includes('-----BEGIN CERTIFICATE-----') ||
+            !certContent.includes('-----BEGIN CERTIFICATE-----') ||
+            (!keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
+              !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----'))
+          ) {
             throw new Error('Invalid PEM format in certificate files')
           }
 
@@ -140,13 +152,15 @@ async function bootstrap() {
 
     console.log('Microservice started (Redis streams)')
 
-    app.useGlobalPipes(new ValidationPipe({
-      transform: true,
-      whitelist: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-      },
-    }))
+    app.useGlobalPipes(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        transformOptions: {
+          enableImplicitConversion: true,
+        },
+      }),
+    )
 
     await app.listen()
 

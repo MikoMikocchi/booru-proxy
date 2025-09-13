@@ -17,7 +17,8 @@ export class CreateRequestDto {
   @IsString()
   @MaxLength(100)
   @Matches(/^[\w\s\-,:()]{1,100}$/i, {
-    message: 'Query: alphanumeric, spaces, hyphens, colons, parentheses only, max 100 chars',
+    message:
+      'Query: alphanumeric, spaces, hyphens, colons, parentheses only, max 100 chars',
   })
   query: string
 

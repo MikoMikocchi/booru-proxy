@@ -12,19 +12,17 @@ import { ApiThrottlerGuard } from './throttler.guard'
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
-        throttlers: [{
-          ttl: configService.get('THROTTLE_TTL') || 60,
-          limit: configService.get('THROTTLE_LIMIT') || 10,
-        }],
+        throttlers: [
+          {
+            ttl: configService.get('THROTTLE_TTL') || 60,
+            limit: configService.get('THROTTLE_LIMIT') || 10,
+          },
+        ],
       }),
       inject: [ConfigService],
     }),
   ],
-  providers: [
-    RateLimiterService,
-    RateLimitManagerService,
-    ApiThrottlerGuard,
-  ],
+  providers: [RateLimiterService, RateLimitManagerService, ApiThrottlerGuard],
   exports: [
     RateLimiterService,
     RateLimitManagerService,

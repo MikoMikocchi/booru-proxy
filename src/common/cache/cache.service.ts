@@ -160,7 +160,7 @@ export class CacheService {
       .digest('hex')
 
     // Build base key structure
-    let keyParts = [CACHE_PREFIX, apiPrefix, POSTS_RESOURCE, queryHash]
+    const keyParts = [CACHE_PREFIX, apiPrefix, POSTS_RESOURCE, queryHash]
 
     // Add limit if provided (deterministic)
     if (limit !== undefined) {
@@ -238,17 +238,25 @@ export class CacheService {
       const data = await this.backend.get(key)
       return data ? JSON.stringify(data) : null
     } catch (error) {
-      this.logger.error(`Cache backend get error for key ${key}: ${error.message}`)
+      this.logger.error(
+        `Cache backend get error for key ${key}: ${error.message}`,
+      )
       throw error
     }
   }
 
-  private async setex(key: string, expiresIn: number, value: string): Promise<void> {
+  private async setex(
+    key: string,
+    expiresIn: number,
+    value: string,
+  ): Promise<void> {
     try {
       const parsedValue = typeof value === 'string' ? JSON.parse(value) : value
       await this.backend.setex(key, expiresIn, parsedValue)
     } catch (error) {
-      this.logger.error(`Cache backend setex error for key ${key}: ${error.message}`)
+      this.logger.error(
+        `Cache backend setex error for key ${key}: ${error.message}`,
+      )
       throw error
     }
   }
@@ -257,7 +265,9 @@ export class CacheService {
     try {
       await this.backend.del(key)
     } catch (error) {
-      this.logger.error(`Cache backend del error for key ${key}: ${error.message}`)
+      this.logger.error(
+        `Cache backend del error for key ${key}: ${error.message}`,
+      )
       throw error
     }
   }
@@ -286,7 +296,7 @@ export class CacheService {
     fetchFn: () => Promise<T>,
     ttl?: number,
   ): Promise<T> {
-    let cached = await this.get(key)
+    const cached = await this.get(key)
     if (cached) {
       try {
         this.logger.debug(`Cache hit for key: ${key}`)

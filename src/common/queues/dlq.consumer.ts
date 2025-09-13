@@ -44,12 +44,16 @@ export class DlqConsumer implements OnModuleInit {
         const originalError = fields.find(f => f[0] === 'originalError')?.[1]
 
         if (!jobId || !error || !queryHash) {
-          this.logger.error(`Invalid DLQ entry ${streamId} for ${apiPrefix}, deleting`)
+          this.logger.error(
+            `Invalid DLQ entry ${streamId} for ${apiPrefix}, deleting`,
+          )
           await this.redis.xdel(dlqStream, streamId)
           continue
         }
 
-        const queryLength = parseInt(fields.find(f => f[0] === 'queryLength')?.[1] || '0');
+        const queryLength = parseInt(
+          fields.find(f => f[0] === 'queryLength')?.[1] || '0',
+        )
         this.logger.error(
           `Processing DLQ entry ${jobId} (${apiPrefix}): error = ${error}, query hash = ${queryHash}, length = ${queryLength} chars, retry = ${retryCount}/${MAX_DLQ_RETRIES}`,
         )
@@ -81,10 +85,11 @@ export class DlqConsumer implements OnModuleInit {
             jobId,
             error,
             queryHash,
-            originalError || `Retry skipped due to privacy masking (attempt ${newRetryCount})`,
+            originalError ||
+              `Retry skipped due to privacy masking (attempt ${newRetryCount})`,
           )
           await this.redis.xdel(dlqStream, streamId)
-          continue;
+          continue
 
           // Original retry logic (commented for privacy):
           /*
@@ -123,7 +128,9 @@ export class DlqConsumer implements OnModuleInit {
         }
       }
     } catch (error) {
-      this.logger.error(`DLQ processing error for ${apiPrefix}: ${error.message}`)
+      this.logger.error(
+        `DLQ processing error for ${apiPrefix}: ${error.message}`,
+      )
     }
   }
 
@@ -133,14 +140,14 @@ export class DlqConsumer implements OnModuleInit {
     while (true) {
       try {
         // Process DLQ for danbooru (and other APIs when added)
-        await this.processDLQ('danbooru');
+        await this.processDLQ('danbooru')
         // Add more API prefixes here as they are implemented
 
         // Wait before next poll cycle
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 2000))
       } catch (error) {
-        this.logger.error(`Error in DLQ processing cycle: ${error.message}`);
-        await new Promise(resolve => setTimeout(resolve, 5000)); // Longer wait on error
+        this.logger.error(`Error in DLQ processing cycle: ${error.message}`)
+        await new Promise(resolve => setTimeout(resolve, 5000)) // Longer wait on error
       }
     }
   }
