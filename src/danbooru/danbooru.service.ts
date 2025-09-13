@@ -224,6 +224,8 @@ export class DanbooruService {
     const rating = post.rating
     const source = post.source ?? null
     const copyright = post.tag_string_copyright
+    const id = post.id
+    const characters = post.tag_string_character ?? null
 
     this.logger.log(
       `Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
@@ -239,6 +241,8 @@ export class DanbooruService {
       rating,
       source,
       copyright,
+      id,
+      characters,
     }
   }
 

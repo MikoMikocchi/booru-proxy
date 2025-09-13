@@ -12,6 +12,8 @@ export interface DanbooruSuccessResponse {
   rating: string
   source: string | null
   copyright: string
+  id: number
+  characters?: string | null
 }
 
 export interface DanbooruErrorResponse {
