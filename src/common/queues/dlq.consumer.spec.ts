@@ -154,7 +154,7 @@ describe('DlqConsumer', () => {
 
       await consumer['processDLQ'](apiName)
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xread).toHaveBeenCalledWith(
         'BLOCK',
         5000,
@@ -211,7 +211,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'API returned empty',
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
     })
 
@@ -256,7 +256,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Empty response',
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -299,7 +299,7 @@ describe('DlqConsumer', () => {
           'Job max-retry-job moved to dead queue (danbooru, max retries or permanent error)',
         ),
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -337,7 +337,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Auth failed',
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
@@ -368,7 +368,7 @@ describe('DlqConsumer', () => {
           'Invalid DLQ entry 1640995200000-0 for danbooru, deleting',
         ),
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
     })
@@ -410,7 +410,7 @@ describe('DlqConsumer', () => {
       await consumer['processDLQ'](apiName)
 
       expect(mockMoveToDeadQueue).toHaveBeenCalledTimes(2)
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledTimes(2)
       expect(mockLogger.error).toHaveBeenCalledTimes(2)
       expect(mockLogger.warn).toHaveBeenCalledTimes(2)
@@ -476,7 +476,7 @@ describe('DlqConsumer', () => {
         queryHash,
         'Retry skipped due to privacy masking (attempt 1)',
       )
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockRetryFromDLQ).not.toHaveBeenCalled()
     })
@@ -493,7 +493,7 @@ describe('DlqConsumer', () => {
         ),
       )
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+       
       expect(mockRedis.xdel).not.toHaveBeenCalled()
     })
   })

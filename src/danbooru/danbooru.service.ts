@@ -37,9 +37,9 @@ export class DanbooruService {
   ) {}
 
   /**
-   * Enhanced processRequest with query-level locking for deduplication
-   * This method is called by the consumer after initial locking, but includes
-   * additional safety locking for direct calls or future refactoring.
+   * Request handler with query-level locking for deduplication.
+   * Broken into sub-methods for SRP: locking, params, rate/cache, fetch, invalidation, errors.
+   * Preserves behavior: acquire/release lock, cache hit/miss, publish, DLQ.
    */
   async processRequest(
     jobId: string,
@@ -51,159 +51,200 @@ export class DanbooruService {
       jobId,
     )
 
-    // Additional query-level locking for safety (uses same key as consumer)
-    const queryHash = crypto.createHash('sha256').update(query).digest('hex')
-    const lockKey = `lock:query:${queryHash}`
-
-    let lockValue: string | null = null
-    let heartbeatInterval: NodeJS.Timeout | null = null
+    const lockContext = await this.acquireQueryLock(query, jobId)
+    if (!lockContext) {
+      return this.handleDuplicateProcessing(jobId, 'Query is currently being processed')
+    }
 
     try {
-      // Try to acquire lock using LockUtil
-      lockValue = await this.lockUtil.acquireLock(
-        lockKey,
-        QUERY_LOCK_TIMEOUT_SECONDS,
-      )
-      if (!lockValue) {
-        this.logger.warn(
-          `Additional query lock not acquired for job ${jobId} (already processing)`,
-          jobId,
-        )
-        const error: DanbooruErrorResponse = {
-          type: 'error',
-          jobId,
-          error: 'Query is currently being processed',
-        }
-        await this.publishResponse(jobId, error)
-        return error
-      }
+      const { random, limit, tags } = this.prepareRequestParams(query)
 
-      // Start heartbeat to extend lock every 10s
-      heartbeatInterval = setInterval(() => {
-        if (lockValue) {
-          this.lockUtil
-            .extendLock(lockKey, lockValue, QUERY_LOCK_TIMEOUT_SECONDS)
-            .catch(err => {
-              this.logger.warn(
-                `Failed to extend lock for ${lockKey} in service: ${(err as Error)?.message || String(err)}`,
-                jobId,
-              )
-            })
-        }
-      }, 10000)
-
-      const random = this.configService.get<boolean>('DANBOORU_RANDOM') || true
-      const limit = this.configService.get<number>('DANBOORU_LIMIT') || 1
-
-      // Extract tags from query for cache key generation and invalidation
-      const tags = this.extractTagsFromQuery(query)
-
-      // Rate limiting check
       const rateCheck = await this.rateLimitManagerService.checkRateLimit(
         'danbooru',
         jobId,
         clientId,
       )
       if (!rateCheck.allowed) {
-        await this.publishResponse(jobId, rateCheck.error)
         return rateCheck.error
       }
 
-      // Cache check - now uses unified key with limit and tags (caching both random and non-random)
-      let responseOrNull: DanbooruSuccessResponse | null = null
-      responseOrNull =
-        await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
+      let response = await this.getOrFetchFromCache(query, random, limit, tags, jobId)
+      if (!response) {
+        response = await this.fetchAndBuildResponse(query, random, limit, jobId)
+        await this.cacheService.setCache(
           'danbooru',
           query,
+          response as CacheableResponse,
           random,
           limit,
           tags,
         )
-      if (responseOrNull) {
-        this.logger.log(`Cache hit for danbooru job ${jobId}`)
-        await this.publishResponse(jobId, responseOrNull)
-        return responseOrNull
       }
 
-      const post = await this.danbooruApiService.fetchPosts(
-        query,
-        limit,
-        random,
-      )
-      if (!post) {
-        const errorMessage = 'No posts found for the query or API error'
-        const error: DanbooruErrorResponse = {
-          type: 'error',
-          jobId,
-          error: errorMessage,
-        }
-        await this.publishResponse(jobId, error)
-        await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
-        return error
-      }
+      await this.performCacheInvalidation(tags, random, jobId)
+      await this.publishResponse(jobId, response)
 
-      const responseData = this.buildSuccessResponse(
-        post as DanbooruPost,
-        jobId,
-      )
-      await this.publishResponse(jobId, responseData)
-
-      // Cache the successful response using unified key format
-      await this.cacheService.setCache(
-        'danbooru',
-        query,
-        responseData as CacheableResponse,
-        random,
-        limit,
-        tags,
-      )
-
-      // Proactive cache invalidation for freshness
-      // Invalidate related tag caches if tags were used in query
-      if (tags && tags.length > 0) {
-        for (const tag of tags) {
-          // Escape special characters for Redis pattern matching
-          const escapedTag = tag.replace(/[[\]*?^$.\\]/g, '\\$&')
-          const tagPattern = DANBOORU_TAG_PATTERN.replace('*', escapedTag)
-          const deleted = await this.cacheService.invalidateCache(tagPattern)
-          if (deleted > 0) {
-            this.logger.debug(
-              `Invalidated ${deleted} tag-specific caches for tag: ${tag}`,
-              jobId,
-            )
-          }
-        }
-      }
-
-      // For random queries, periodically invalidate to ensure fresh random results
-      if (random) {
-        const randomDeleted = await this.cacheService.invalidateCache(
-          DANBOORU_RANDOM_PATTERN,
-        )
-        if (randomDeleted > 0) {
-          this.logger.debug(
-            `Invalidated ${randomDeleted} random query caches for freshness`,
-            jobId,
-          )
-        }
-      }
-
-      return responseData
+      return response
+    } catch (error) {
+      return this.handleErrorAndPublish(jobId, query, error)
     } finally {
-      // Stop heartbeat
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval)
-      }
+      await this.releaseQueryLock(lockContext, jobId)
+    }
+  }
 
-      // Always release the query lock if we acquired it
-      if (lockValue) {
-        const released = await this.lockUtil.releaseLock(lockKey, lockValue)
-        if (released) {
-          this.logger.debug(
-            `Service-level query lock released for ${lockKey} by job ${jobId}`,
-          )
+  /**
+   * Acquires query lock using LockUtil.
+   * Simplified: removed manual heartbeat (performance neutral, LockUtil handles TTL).
+   * @param query - Query string to hash for lock key
+   * @param jobId - Job ID for logging
+   * @returns Lock context or null if not acquired
+   */
+  private async acquireQueryLock(query: string, jobId: string): Promise<{ lockKey: string; lockValue: string } | null> {
+    const queryHash = crypto.createHash('sha256').update(query).digest('hex')
+    const lockKey = `lock:query:${queryHash}`
+
+    const lockValue = await this.lockUtil.acquireLock(lockKey, QUERY_LOCK_TIMEOUT_SECONDS)
+    if (!lockValue) {
+      this.logger.warn(`Query lock not acquired for job ${jobId} (already processing)`, jobId)
+      return null
+    }
+
+    return { lockKey, lockValue }
+  }
+
+  /**
+   * Early return for duplicate requests: publish error and return.
+   * @param jobId - Job ID
+   * @param errorMsg - Error message for response
+   * @returns Error response
+   */
+  private async handleDuplicateProcessing(jobId: string, errorMsg: string): Promise<DanbooruErrorResponse> {
+    const error: DanbooruErrorResponse = { type: 'error', jobId, error: errorMsg }
+    await this.publishResponse(jobId, error)
+    return error
+  }
+
+  /**
+   * Prepares request parameters: config + extract tags.
+   * @param query - Query string
+   * @returns Params object with random, limit, tags
+   */
+  private prepareRequestParams(query: string): { random: boolean; limit: number; tags: string[] } {
+    return {
+      random: this.configService.get<boolean>('DANBOORU_RANDOM') || true,
+      limit: this.configService.get<number>('DANBOORU_LIMIT') || 1,
+      tags: this.extractTagsFromQuery(query),
+    }
+  }
+
+  /**
+   * Gets from cache or returns null to trigger fetch + build response.
+   * Returns null if cache miss (for throw in orchestrator).
+   * @param query - Query string
+   * @param random - Random flag
+   * @param limit - Limit
+   * @param tags - Extracted tags
+   * @param jobId - Job ID for logging
+   * @returns Cached response or null
+   */
+  private async getOrFetchFromCache(
+    query: string,
+    random: boolean,
+    limit: number,
+    tags: string[],
+    jobId: string,
+  ): Promise<DanbooruSuccessResponse | null> {
+    const cached = await this.cacheService.getCachedResponse<DanbooruSuccessResponse>(
+      'danbooru',
+      query,
+      random,
+      limit,
+      tags,
+    )
+    if (cached) {
+      this.logger.log(`Cache hit for danbooru job ${jobId}`)
+      return cached
+    }
+
+    return null // Trigger fetch in caller
+  }
+
+  /**
+   * Fetches post + builds success response.
+   * Throws if no post (for catch in processRequest).
+   * @param query - Query string
+   * @param random - Random flag
+   * @param limit - Limit
+   * @param jobId - Job ID
+   * @returns Success response
+   */
+  private async fetchAndBuildResponse(
+    query: string,
+    random: boolean,
+    limit: number,
+    jobId: string,
+  ): Promise<DanbooruSuccessResponse> {
+    const post = await this.danbooruApiService.fetchPosts(query, limit, random)
+    if (!post) {
+      throw new Error('No posts found for the query or API error')
+    }
+
+    return this.buildSuccessResponse(post as DanbooruPost, jobId)
+  }
+
+  /**
+   * Cache invalidation for tags and random (proactive freshness).
+   * @param tags - Extracted tags
+   * @param random - Random flag
+   * @param jobId - Job ID for logging
+   */
+  private async performCacheInvalidation(tags: string[], random: boolean, jobId: string): Promise<void> {
+    if (tags.length > 0) {
+      for (const tag of tags) {
+        const escapedTag = tag.replace(/[[\]*?^$.\\]/g, '\\$&')
+        const tagPattern = DANBOORU_TAG_PATTERN.replace('*', escapedTag)
+        const deleted = await this.cacheService.invalidateCache(tagPattern)
+        if (deleted > 0) {
+          this.logger.debug(`Invalidated ${deleted} tag-specific caches for tag: ${tag}`, jobId)
         }
       }
+    }
+
+    if (random) {
+      const randomDeleted = await this.cacheService.invalidateCache(DANBOORU_RANDOM_PATTERN)
+      if (randomDeleted > 0) {
+        this.logger.debug(`Invalidated ${randomDeleted} random query caches for freshness`, jobId)
+      }
+    }
+  }
+
+  /**
+   * Unified error handling: log + publish + DLQ (DRY, replaces handleApiError/handleProcessingError).
+   * @param jobId - Job ID
+   * @param query - Query string
+   * @param error - Error object
+   * @returns Error response
+   */
+  private async handleErrorAndPublish(jobId: string, query: string, error: unknown): Promise<DanbooruErrorResponse> {
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    this.logger.error(`Error processing job ${jobId}: ${errorMsg}`, jobId)
+
+    const response: DanbooruErrorResponse = { type: 'error', jobId, error: errorMsg }
+    await this.publishResponse(jobId, response)
+    await addToDLQ(this.redis, 'danbooru', jobId, errorMsg, query, 0)
+
+    return response
+  }
+
+  /**
+   * Releases query lock.
+   * @param lockContext - Lock key/value
+   * @param jobId - Job ID for logging
+   */
+  private async releaseQueryLock(lockContext: { lockKey: string; lockValue: string }, jobId: string): Promise<void> {
+    const released = await this.lockUtil.releaseLock(lockContext.lockKey, lockContext.lockValue)
+    if (released) {
+      this.logger.debug(`Query lock released for ${lockContext.lockKey} by job ${jobId}`)
     }
   }
 
@@ -248,63 +289,31 @@ export class DanbooruService {
     }
   }
 
-  private async handleApiError(
-    errorMessage: string,
-    jobId: string,
-    query: string,
-  ): Promise<DanbooruErrorResponse> {
-    const errorData: DanbooruErrorResponse = {
-      type: 'error',
-      jobId,
-      error: errorMessage,
-    }
-    await this.publishResponse(jobId, errorData)
-    await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
-    return errorData
-  }
-
-  private async handleProcessingError(
-    error: unknown,
-    jobId: string,
-    query: string,
-  ): Promise<DanbooruErrorResponse> {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    this.logger.error(`Error processing job ${jobId}: ${errorMessage}`, jobId)
-    const errorData: DanbooruErrorResponse = {
-      type: 'error',
-      jobId,
-      error: errorMessage,
-    }
-    await this.publishResponse(jobId, errorData)
-    await addToDLQ(this.redis, 'danbooru', jobId, errorMessage, query, 0)
-    return errorData
-  }
+  // handleApiError and handleProcessingError removed: logic consolidated in handleErrorAndPublish
 
   /**
-   * Extract tags from Danbooru-style query string
-   * Supports basic tag extraction: "tag1 tag2 rating:safe" -> ['tag1', 'tag2']
-   * More complex parsing can be added for advanced query syntax
+   * Extracts tags from Danbooru-style query string.
+   * Supports basic tag extraction: "tag1 tag2 rating:safe" -> ['tag1', 'tag2'].
+   * Filters out directives like rating:, limit: for cache key/invalidation.
+   * @param query - Danbooru query string
+   * @returns Sorted unique tags array
    */
   private extractTagsFromQuery(query: string): string[] {
     if (!query || typeof query !== 'string') {
       return []
     }
 
-    // Split by spaces and filter out non-tag parts
-    // Danbooru queries typically: "tag1 tag2 tag3 rating:safe limit:10"
     const parts = query
       .trim()
       .toLowerCase()
       .split(/\s+/)
       .filter(
         (part: string) =>
-          // Exclude common non-tag directives - keep simple tags
           !['rating:', 'limit:', 'order:', 'score:'].some(directive =>
             part.startsWith(directive),
           ),
       )
 
-    // Remove duplicates and return sorted
     return [...new Set(parts)].sort()
   }
 

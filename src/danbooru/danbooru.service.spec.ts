@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing'
 import { DanbooruService } from './danbooru.service'
 import { DanbooruApiService } from './danbooru-api.service'
+import type { DanbooruErrorResponse } from './interfaces/danbooru.interface'
 import { CacheService } from '../common/cache/cache.service'
 import { CacheManagerService } from '../common/cache/cache-manager.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
@@ -9,6 +10,9 @@ import Redis from 'ioredis'
 import { Logger } from '@nestjs/common'
 import * as crypto from 'crypto'
 import { LockUtil } from '../common/redis/utils/lock.util'
+import { addToDLQ } from '../common/queues/utils/dlq.util'
+import { QUERY_LOCK_TIMEOUT_SECONDS } from '../common/constants'
+import type { RateLimitResult } from '../common/rate-limit/rate-limit-manager.service'
 
 jest.mock('./danbooru-api.service')
 jest.mock('../common/cache/cache.service')
@@ -17,12 +21,13 @@ jest.mock('../common/rate-limit/rate-limit-manager.service')
 jest.mock('ioredis')
 jest.mock('crypto')
 jest.mock('../common/redis/utils/lock.util')
+jest.mock('../common/queues/utils/dlq.util')
 
 const mockLockUtil = {
   acquireLock: jest.fn(),
   extendLock: jest.fn(),
   releaseLock: jest.fn(),
-}
+} as jest.MockedObject<LockUtil>
 
 const mockRedis = {
   set: jest.fn(),
@@ -115,42 +120,40 @@ describe('DanbooruService', () => {
 
       ;(crypto.createHash as jest.Mock).mockReturnValue(mockHash as unknown)
 
-      // Mock LockUtil
-
+      // Mock LockUtil for new methods
       mockLockUtil.acquireLock.mockResolvedValue('lock-value')
-
-      mockLockUtil.extendLock.mockResolvedValue(true)
-
       mockLockUtil.releaseLock.mockResolvedValue(true)
 
-      // Mock Redis for lock
-
-      mockRedis.set!.mockResolvedValue('OK')
-
-      mockRedis.get!.mockResolvedValue(jobId)
-
-      mockRedis.del!.mockResolvedValue(1)
-
+      // Mock Redis for publish
       mockRedis.xadd!.mockResolvedValue('1')
+
+      // Mock DLQ for errors (via jest.mock)
+      ;(addToDLQ as jest.Mock).mockResolvedValue(undefined)
     })
 
     it('should process request successfully with cache miss', async () => {
-      // Mock rate limit success
-
+      // Arrange: Mock rate limit success
       mockRateLimitManager.checkRateLimit.mockResolvedValue({
         allowed: true,
       } as const)
 
-      // Mock cache miss
-
+      // Arrange: Mock cache miss (getOrFetchFromCache returns null)
       mockCacheService.getCachedResponse.mockResolvedValue(null)
 
-      // Mock API success
-
+      // Arrange: Mock API success in fetchAndBuildResponse
       mockApiService.fetchPosts.mockResolvedValue(mockPost)
+
+      // Arrange: Mock cache set in processRequest
+      mockCacheService.setCache.mockResolvedValue(undefined)
+
+      // Arrange: Mock invalidation (2 calls: tags + random)
+      mockCacheService.invalidateCache
+        .mockResolvedValueOnce(0) // tags
+        .mockResolvedValueOnce(1) // random
 
       const result = await service.processRequest(jobId, query, clientId)
 
+      // Act & Assert: Success response built correctly
       expect(result).toEqual({
         type: 'success',
         jobId,
@@ -164,42 +167,31 @@ describe('DanbooruService', () => {
         characters: null,
       })
 
-      // Verify rate limit check
+      // Assert: Rate limit checked
 
-      expect(
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        mockRateLimitManager.checkRateLimit as jest.Mock,
-      ).toHaveBeenCalledWith('danbooru', jobId, clientId)
-
-      // Verify cache miss - service uses random=true (default)
-
-      expect(
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        mockCacheService.getCachedResponse as jest.Mock,
-      ).toHaveBeenCalledWith('danbooru', query, true, 1, ['cat'])
-
-      // Verify API call with random=true (default)
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(mockApiService.fetchPosts as jest.Mock).toHaveBeenCalledWith(
-        query,
-        1,
-        true,
-      )
-
-      // Verify response published with timestamp
-
-      expect(mockRedis.xadd as jest.Mock).toHaveBeenCalledWith(
-        'danbooru:responses',
-        '*',
-        'jobId',
+      expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
+        'danbooru',
         jobId,
-        'data',
-        expect.any(String), // JSON string with result + timestamp
+        clientId,
       )
 
-      // Verify cache set with full signature and random=true
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(mockCacheService.setCache as jest.Mock).toHaveBeenCalledWith(
+      // Assert: Cache get called (in getOrFetchFromCache, defaults random=true, limit=1, tags=['cat'])
+
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        true,
+        1,
+        ['cat'],
+      )
+
+      // Assert: API fetch called (in fetchAndBuildResponse)
+
+      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(query, 1, true)
+
+      // Assert: Cache set called after fetch
+
+      expect(mockCacheService.setCache).toHaveBeenCalledWith(
         'danbooru',
         query,
         result,
@@ -208,15 +200,26 @@ describe('DanbooruService', () => {
         ['cat'],
       )
 
-      // Verify cache invalidation for random queries
+      // Assert: Invalidation called twice
 
-      expect(
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        mockCacheService.invalidateCache as jest.Mock,
-      ).toHaveBeenCalledTimes(2)
+      expect(mockCacheService.invalidateCache).toHaveBeenCalledTimes(2)
 
-      // Verify lock released
+      // Assert: Response published
 
+      expect(mockRedis.xadd).toHaveBeenCalledWith(
+        'danbooru:responses',
+        '*',
+        'jobId',
+        jobId,
+        'data',
+        expect.any(String),
+      )
+
+      // Assert: Lock acquired and released
+      expect(mockLockUtil.acquireLock).toHaveBeenCalledWith(
+        lockKey,
+        QUERY_LOCK_TIMEOUT_SECONDS,
+      )
       expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(
         lockKey,
         'lock-value',
@@ -224,6 +227,12 @@ describe('DanbooruService', () => {
     })
 
     it('should return cached response when cache hit (random=true)', async () => {
+      // Arrange: Mock rate limit success
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as const)
+
+      // Arrange: Mock cache hit (getOrFetchFromCache returns cached)
       const cachedResponse = {
         type: 'success' as const,
         jobId: 'cached-job',
@@ -234,38 +243,148 @@ describe('DanbooruService', () => {
         source: 'cached source',
         copyright: 'cached copyright',
       }
-
-      // Mock rate limit success
-
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: true,
-      } as const)
-
-      // Mock cache hit
-
       mockCacheService.getCachedResponse.mockResolvedValue(cachedResponse)
+
+      // Arrange: Invalidation (always for freshness)
+      mockCacheService.invalidateCache
+        .mockResolvedValueOnce(0) // tags
+        .mockResolvedValueOnce(1) // random
 
       const result = await service.processRequest(jobId, query, clientId)
 
+      // Act & Assert
       expect(result).toEqual(cachedResponse)
 
-      // Verify cache hit with service default random=true
+      // Assert: Cache get called
 
-      expect(
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        mockCacheService.getCachedResponse as jest.Mock,
-      ).toHaveBeenCalledWith('danbooru', query, true, 1, ['cat'])
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
+        'danbooru',
+        query,
+        true,
+        1,
+        ['cat'],
+      )
 
-      // Should not call API
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+      // Assert: No API call
+
       expect(mockApiService.fetchPosts).not.toHaveBeenCalled()
 
-      // Lock should be released
+      // Assert: No cache set (hit)
 
-      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(
-        lockKey,
-        'lock-value',
-      )
+      expect(mockCacheService.setCache).not.toHaveBeenCalled()
+
+      // Assert: Invalidation called (for freshness, even on hit)
+
+      expect(mockCacheService.invalidateCache).toHaveBeenCalledTimes(2)
+
+      // Assert: Published
+
+      expect(mockRedis.xadd).toHaveBeenCalled()
+
+      // Assert: Lock handled
+      expect(mockLockUtil.acquireLock).toHaveBeenCalled()
+      expect(mockLockUtil.releaseLock).toHaveBeenCalled()
+    })
+
+    it('should handle rate limit failure', async () => {
+      // Arrange: Rate limit fail
+      const rateError: RateLimitResult = {
+        allowed: false,
+        error: {
+          type: 'error',
+          jobId,
+          error: 'Rate limited',
+        } as DanbooruErrorResponse,
+      }
+      mockRateLimitManager.checkRateLimit.mockResolvedValue(rateError)
+
+      // Act
+      const result = await service.processRequest(jobId, query, clientId)
+
+      // Assert: Error response from rate check
+      expect(result).toEqual(rateError.error)
+
+      // Assert: Lock acquired/released (early return after rate check)
+      expect(mockLockUtil.acquireLock).toHaveBeenCalled()
+      expect(mockLockUtil.releaseLock).toHaveBeenCalled()
+
+      // Assert: No cache/API calls
+
+      expect(mockCacheService.getCachedResponse).not.toHaveBeenCalled()
+
+      expect(mockApiService.fetchPosts).not.toHaveBeenCalled()
+
+      // For rate limit, no publish or DLQ - early return
+    })
+
+    it('should handle lock not acquired (duplicate)', async () => {
+      // Arrange: Lock fail
+      mockLockUtil.acquireLock.mockResolvedValue(null)
+
+      // Act
+      const result = await service.processRequest(jobId, query, clientId)
+
+      // Assert: Duplicate error
+      expect(result).toEqual({
+        type: 'error',
+        jobId,
+        error: 'Query is currently being processed',
+      })
+
+      // Assert: No further calls
+
+      expect(mockRateLimitManager.checkRateLimit).not.toHaveBeenCalled()
+
+      expect(mockCacheService.getCachedResponse).not.toHaveBeenCalled()
+
+      // Assert: Published
+
+      expect(mockRedis.xadd).toHaveBeenCalled()
+
+      // Assert: No release (no lock)
+      expect(mockLockUtil.releaseLock).not.toHaveBeenCalled()
+    })
+
+    it('should handle API fetch failure', async () => {
+      // Arrange: Rate ok, cache miss, API null
+      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+        allowed: true,
+      } as const)
+      mockCacheService.getCachedResponse.mockResolvedValue(null)
+      mockApiService.fetchPosts.mockResolvedValue(null)
+
+      // Act
+      const result = await service.processRequest(jobId, query, clientId)
+
+      // Assert: Error from fetch
+      expect(result).toEqual({
+        type: 'error',
+        jobId,
+        error: 'No posts found for the query or API error',
+      })
+
+      // Assert: Cache get called
+
+      expect(mockCacheService.getCachedResponse).toHaveBeenCalled()
+
+      // Assert: API called
+
+      expect(mockApiService.fetchPosts).toHaveBeenCalled()
+
+      // Assert: No set/invalidation
+
+      expect(mockCacheService.setCache).not.toHaveBeenCalled()
+
+      expect(mockCacheService.invalidateCache).not.toHaveBeenCalled()
+
+      // Assert: Published and DLQ
+
+      expect(mockRedis.xadd).toHaveBeenCalled()
+      expect(addToDLQ as jest.Mock).toHaveBeenCalled()
+
+      // Assert: Lock handled
+      expect(mockLockUtil.acquireLock).toHaveBeenCalled()
+      expect(mockLockUtil.releaseLock).toHaveBeenCalled()
     })
   })
 })
