@@ -349,12 +349,13 @@ export class RedisStreamConsumer
           JSON.stringify({ ...validationResult.error, timestamp: Date.now() }),
         )
 
-        // Add to DLQ with encrypted query for privacy
         const hasValidationDlqDuplicate = await this.dedupCheck(
           apiPrefix,
           query,
           jobId,
         )
+        const errorMsg = `Validation failed: ${validationResult.error!.error}`
+
         if (!hasValidationDlqDuplicate) {
           await addToDLQ(
             this.redis,
@@ -363,9 +364,11 @@ export class RedisStreamConsumer
             validationResult.error!.error,
             query, // plaintext - will be encrypted in addToDLQ
           )
+        } else {
+          this.logger.warn(`Skipping DLQ for duplicate validation error: ${errorMsg}`, jobId)
         }
 
-        throw new Error(`Validation failed: ${validationResult.error!.error}`)
+        return { success: false, error: errorMsg }
       }
 
       // 5. Process job using extracted method

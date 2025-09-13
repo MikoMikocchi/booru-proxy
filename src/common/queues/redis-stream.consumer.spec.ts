@@ -51,6 +51,7 @@ type TestConsumer = Omit<
   lockUtil: LockUtil
   onModuleInit(): Promise<void>
   onModuleDestroy(): Promise<void>
+  logger: Partial<jest.Mocked<Logger>>
 }
 
 jest.mock('../../danbooru/danbooru.service')
@@ -77,11 +78,18 @@ describe('RedisStreamConsumer', () => {
     mockRedis = {
       set: jest.fn(),
       xadd: jest.fn(),
-    }
+      exists: jest.fn(),
+      setex: jest.fn(),
+      xrange: jest.fn(),
+    } as Partial<jest.Mocked<Redis>> & {exists: jest.Mock, setex: jest.Mock, xrange: jest.Mock}
 
     mockModuleRef = {
       get: jest.fn(),
     }
+
+    ;(mockRedis.exists as jest.Mock).mockResolvedValue(0)
+    ;(mockRedis.setex as jest.Mock).mockResolvedValue('OK')
+    ;(mockRedis.xrange as jest.Mock).mockResolvedValue([])
 
     mockLogger = {
       log: jest.fn(),
@@ -103,8 +111,8 @@ describe('RedisStreamConsumer', () => {
       releaseLock: jest.fn().mockResolvedValue(true),
     }
     ;(mockModuleRef.get as jest.Mock)
-      .mockImplementationOnce(() => mockDanbooruServiceInstance)
       .mockImplementationOnce(() => mockValidationServiceInstance)
+      .mockImplementationOnce(() => mockDanbooruServiceInstance)
 
     mockCryptoRandomUUID.mockReturnValue('123e4567-e89b-12d3-a456-426614174000')
     ;(
@@ -136,8 +144,11 @@ describe('RedisStreamConsumer', () => {
       RedisStreamConsumer,
     ) as unknown as TestConsumer
 
+    consumer.logger = mockLogger
+
+    expect(typeof consumer.logger.log).toBe('function')
+
     // Reset mocks
-    jest.clearAllMocks()
   })
 
   describe('process', () => {
@@ -151,6 +162,9 @@ describe('RedisStreamConsumer', () => {
     const lockKey = `lock:query:danbooru:test-query-hash`
 
     beforeEach(() => {
+      jest.clearAllMocks()
+      ;(mockRedis.set as jest.Mock).mockReset()
+
       mockCryptoRandomUUID.mockReturnValue(jobId)
       ;(
         crypto.createHash as jest.MockedFunction<typeof crypto.createHash>
@@ -163,9 +177,15 @@ describe('RedisStreamConsumer', () => {
       )
 
       mockDedupCheck.mockResolvedValue(false)
-      ;(mockRedis.set as jest.Mock).mockResolvedValueOnce('OK') // Job dedup
+      ;(mockRedis.set as jest.Mock).mockResolvedValue('OK') // Job dedup
       ;(mockLockUtilInstance.acquireLock as jest.Mock).mockResolvedValue(jobId)
       ;(mockLockUtilInstance.releaseLock as jest.Mock).mockResolvedValue(true)
+      ;(
+        mockValidationServiceInstance.validateRequest as jest.Mock
+      ).mockResolvedValue({
+        valid: true,
+        dto: { jobId, query: 'cat rating:safe' },
+      } as ValidationResult)
     })
 
     it('should process job successfully with all validations passing', async () => {
@@ -193,7 +213,7 @@ describe('RedisStreamConsumer', () => {
       expect(mockCryptoRandomUUID).toHaveBeenCalled()
 
       expect(mockLogger.log).toHaveBeenCalledWith(
-        expect.stringContaining(`Processing job ${jobId} for query`),
+        expect.stringContaining('Processing danbooru job'),
         jobId,
       )
 
@@ -210,11 +230,11 @@ describe('RedisStreamConsumer', () => {
         QUERY_LOCK_TIMEOUT_SECONDS,
       )
 
-      expect(mockModuleRef.get).toHaveBeenCalledWith(DanbooruService, {
+      expect(mockModuleRef.get).toHaveBeenCalledWith(ValidationService, {
         strict: false,
       })
 
-      expect(mockModuleRef.get).toHaveBeenCalledWith(ValidationService, {
+      expect(mockModuleRef.get).toHaveBeenCalledWith(DanbooruService, {
         strict: false,
       })
 
@@ -270,18 +290,14 @@ describe('RedisStreamConsumer', () => {
 
     it('should skip processing when lock acquisition fails', async () => {
       mockDedupCheck.mockResolvedValueOnce(false)
-      ;(mockLockUtilInstance.acquireLock as jest.Mock).mockResolvedValueOnce(
-        null,
-      )
+      ;(mockLockUtilInstance.acquireLock as jest.Mock).mockImplementation(() => null)
 
       const result = await consumer.process(mockJob)
 
       expect(result).toEqual({ skipped: true, reason: 'lock failed' })
 
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to acquire query lock'),
-        jobId,
-      )
+      expect(mockLogger.warn).toHaveBeenNthCalledWith(1, 'Failed to acquire lock after 3 retries for job 123e4567-e89b-12d3-a456-426614174000')
+      expect(mockLogger.warn).toHaveBeenNthCalledWith(2, expect.stringContaining('Failed to acquire query lock for danbooru job 123e4567-e89b-12d3-a456-426614174000 (hash: test-que'), jobId)
 
       expect(mockRedis.xadd).toHaveBeenCalledWith(
         'danbooru:responses',
@@ -289,28 +305,30 @@ describe('RedisStreamConsumer', () => {
         'jobId',
         jobId,
         'data',
-        expect.stringContaining('Query currently being processed'),
+        expect.stringContaining('Query currently being processed by another worker'),
       )
 
-      expect(
-        mockValidationServiceInstance.validateRequest,
-      ).not.toHaveBeenCalled()
+      expect(mockModuleRef.get).not.toHaveBeenCalledWith(ValidationService, {
+        strict: false,
+      })
 
-      expect(mockModuleRef.get).not.toHaveBeenCalled()
+      expect(mockLockUtilInstance.acquireLock).toHaveBeenCalled()
 
       expect(mockLockUtilInstance.releaseLock).not.toHaveBeenCalled()
+
+      expect(mockDanbooruServiceInstance.processRequest).not.toHaveBeenCalled()
     })
 
     it('should skip processing on job-level duplicate detection', async () => {
       mockDedupCheck.mockResolvedValueOnce(false)
-      ;(mockRedis.set as jest.Mock).mockResolvedValueOnce(null) // Job dedup fails
+      ;(mockRedis.set as jest.Mock).mockResolvedValueOnce(null) // for processed
 
       const result = await consumer.process(mockJob)
 
       expect(result).toEqual({ skipped: true, reason: 'job duplicate' })
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Duplicate job'),
+        `Duplicate job ${jobId} detected, skipping`,
         jobId,
       )
 
@@ -329,7 +347,7 @@ describe('RedisStreamConsumer', () => {
       mockDedupCheck
         .mockResolvedValueOnce(false) // Initial DLQ check
         .mockResolvedValueOnce(false) // Validation DLQ check
-      ;(mockRedis.set as jest.Mock).mockResolvedValueOnce('OK') // Job dedup
+      ;(mockRedis.set as jest.Mock).mockResolvedValue('OK') // Job dedup
 
       const validationError = {
         type: 'error' as const,
@@ -345,9 +363,12 @@ describe('RedisStreamConsumer', () => {
         error: validationError,
       } as ValidationResult)
 
-      await expect(consumer.process(mockJob)).rejects.toThrow(
-        'Validation failed: Invalid query format',
-      )
+      const result = await consumer.process(mockJob)
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Validation failed: Invalid query format',
+      })
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Validation failed for job'),
@@ -377,10 +398,13 @@ describe('RedisStreamConsumer', () => {
     })
 
     it('should skip DLQ entry for validation error if recent duplicate exists', async () => {
-      mockDedupCheck
-        .mockResolvedValueOnce(false) // Initial DLQ
-        .mockResolvedValueOnce(true) // Validation DLQ check
-      ;(mockRedis.set as jest.Mock).mockResolvedValueOnce('OK')
+      mockDedupCheck.mockReset()
+      mockDedupCheck.mockResolvedValueOnce(false)
+      mockDedupCheck.mockResolvedValueOnce(true)
+      mockRedis.exists = jest.fn().mockResolvedValueOnce(0).mockResolvedValue(1)
+      mockRedis.setex = jest.fn().mockResolvedValue('OK')
+      mockRedis.xrange = jest.fn().mockResolvedValue([])
+      ;(mockRedis.set as jest.Mock).mockResolvedValue('OK')
       ;(
         mockValidationServiceInstance.validateRequest as jest.Mock
       ).mockResolvedValue({
@@ -388,11 +412,19 @@ describe('RedisStreamConsumer', () => {
         error: { type: 'error' as const, jobId, error: 'Invalid format' },
       } as ValidationResult)
 
-      await expect(consumer.process(mockJob)).rejects.toThrow(
-        'Validation failed: Invalid format',
-      )
+      const result = await consumer.process(mockJob)
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Validation failed: Invalid format',
+      })
 
       expect(mockAddToDLQ).not.toHaveBeenCalled()
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping DLQ for duplicate validation error'),
+        jobId,
+      )
 
       expect(mockRedis.xadd).toHaveBeenCalled()
 
@@ -402,21 +434,46 @@ describe('RedisStreamConsumer', () => {
     })
 
     it('should release lock even when processing succeeds', async () => {
+      mockCryptoRandomUUID.mockReturnValue(jobId)
+      ;(
+        crypto.createHash as jest.MockedFunction<typeof crypto.createHash>
+      ).mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            digest: jest.fn().mockReturnValue(queryHash),
+          }) as unknown as ReturnType<typeof crypto.createHash>,
+      )
+      mockRedis.exists = jest.fn().mockResolvedValue(0)
+      mockRedis.setex = jest.fn().mockResolvedValue('OK')
+      mockRedis.xrange = jest.fn().mockResolvedValue([])
+      mockDedupCheck.mockResolvedValue(false)
+      ;(mockRedis.set as jest.Mock).mockResolvedValue('OK')
+      mockLockUtilInstance!.acquireLock!.mockResolvedValue(jobId)
+      mockLockUtilInstance!.releaseLock!.mockResolvedValue(true)
+      ;(mockModuleRef.get as jest.Mock).mockImplementation((service: unknown) => {
+        if (service === ValidationService) return mockValidationServiceInstance
+        if (service === DanbooruService) return mockDanbooruServiceInstance
+        return null
+      })
       ;(
         mockValidationServiceInstance.validateRequest as jest.Mock
       ).mockResolvedValue({
         valid: true,
-        dto: { jobId, query: 'test' },
+        dto: { jobId, query: 'cat rating:safe' },
       } as ValidationResult)
       ;(
         mockDanbooruServiceInstance.processRequest as jest.Mock
-      ).mockResolvedValue({} as unknown)
+      ).mockResolvedValue(undefined)
 
       await consumer.process(mockJob)
 
-      expect(mockLockUtilInstance.acquireLock).toHaveBeenCalled()
+      expect(mockLockUtilInstance!.acquireLock).toHaveBeenCalledWith(
+        lockKey,
+        QUERY_LOCK_TIMEOUT_SECONDS,
+      )
 
-      expect(mockLockUtilInstance.releaseLock).toHaveBeenCalledWith(
+      expect(mockLockUtilInstance!.releaseLock).toHaveBeenCalledWith(
         lockKey,
         jobId,
       )
@@ -437,9 +494,9 @@ describe('RedisStreamConsumer', () => {
         mockDanbooruServiceInstance.processRequest as jest.Mock
       ).mockRejectedValue(new Error('Processing failed'))
 
-      await expect(consumer.process(mockJob)).rejects.toThrow(
-        'Processing failed',
-      )
+      const result = await consumer.process(mockJob)
+
+      expect(result).toEqual({ success: false, error: 'Processing failed' })
 
       expect(mockLockUtilInstance.acquireLock).toHaveBeenCalled()
 
@@ -473,7 +530,7 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Query lock acquired'),
+        expect.stringContaining('Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000'),
       )
     })
 
@@ -489,12 +546,12 @@ describe('RedisStreamConsumer', () => {
       expect(mockLockUtilInstance.acquireLock).toHaveBeenCalledTimes(2)
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Lock acquisition failed'),
-        jobId,
+        expect.stringContaining('Lock acquisition failed for'),
+        expect.any(String),
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Query lock acquired'),
+        expect.stringContaining('Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000'),
       )
     })
 
@@ -508,8 +565,7 @@ describe('RedisStreamConsumer', () => {
       expect(mockLockUtilInstance.acquireLock).toHaveBeenCalledTimes(2)
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to acquire lock after 2 retries'),
-        jobId,
+        'Failed to acquire lock after 2 retries for job 123e4567-e89b-12d3-a456-426614174000',
       )
     })
 
@@ -542,7 +598,7 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Query lock released'),
+        'Query lock released for lock:test',
       )
     })
 
@@ -559,7 +615,7 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Lock not owned'),
+        'Lock lock:test not owned, skipping release',
       )
     })
 
@@ -576,7 +632,7 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Lock not owned'),
+        'Lock lock:test not owned, skipping release',
       )
     })
   })
@@ -585,13 +641,19 @@ describe('RedisStreamConsumer', () => {
     it('should call onModuleInit without errors', async () => {
       await consumer.onModuleInit()
 
-      expect(mockLogger).not.toHaveBeenCalled()
+      expect(mockLogger.log).not.toHaveBeenCalled()
+      expect(mockLogger.warn).not.toHaveBeenCalled()
+      expect(mockLogger.error).not.toHaveBeenCalled()
+      expect(mockLogger.debug).not.toHaveBeenCalled()
     })
 
     it('should call onModuleDestroy without errors', async () => {
       await consumer.onModuleDestroy()
 
-      expect(mockLogger).not.toHaveBeenCalled()
+      expect(mockLogger.log).not.toHaveBeenCalled()
+      expect(mockLogger.warn).not.toHaveBeenCalled()
+      expect(mockLogger.error).not.toHaveBeenCalled()
+      expect(mockLogger.debug).not.toHaveBeenCalled()
     })
   })
 
@@ -622,7 +684,7 @@ describe('RedisStreamConsumer', () => {
       const mockTestJob = { data: { query: 'test' } } as Job<JobData>
       await testConsumer.process(mockTestJob)
 
-      expect(mockModuleRef.get).toHaveBeenCalledWith(DanbooruService, {
+      expect(mockModuleRef.get).toHaveBeenCalledWith(ValidationService, {
         strict: false,
       })
 
