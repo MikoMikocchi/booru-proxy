@@ -126,9 +126,7 @@ export class CacheManagerService {
   }
 
   // Multi-API support: get cache stats (for monitoring)
-  async getCacheStats(
-    apiPrefix: string,
-  ): Promise<{ hits: number; misses: number; size: number }> {
+  getCacheStats(): { hits: number; misses: number; size: number } {
     // Implementation for cache metrics - can use Redis INFO or custom counters
     // For now return mock stats - extend with Redis monitoring
     return {

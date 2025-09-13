@@ -1,26 +1,30 @@
 import { Injectable, Inject } from '@nestjs/common'
 import { ICacheBackend } from '../interfaces/icache-backend.interface'
+import Redis from 'ioredis'
+import { Logger } from '@nestjs/common'
 
 @Injectable()
 export class RedisBackendService implements ICacheBackend {
-  constructor(@Inject('REDIS_CLIENT') private readonly redisClient: any) {}
+  private readonly logger = new Logger(RedisBackendService.name)
 
-  async get(key: string): Promise<any> {
+  constructor(@Inject('REDIS_CLIENT') private readonly redisClient: Redis) {}
+
+  async get(key: string): Promise<unknown> {
     try {
       const data = await this.redisClient.get(key)
-      return data ? JSON.parse(data) : null
-    } catch (error) {
-      console.error(`Redis get error for key ${key}:`, error)
+      return data ? (JSON.parse(data) as unknown) : null
+    } catch (error: unknown) {
+      this.logger.error(`Redis get error for key ${key}:`, error as Error)
       throw error
     }
   }
 
-  async setex(key: string, seconds: number, value: any): Promise<void> {
+  async setex(key: string, seconds: number, value: unknown): Promise<void> {
     try {
       const serializedValue = JSON.stringify(value)
       await this.redisClient.setex(key, seconds, serializedValue)
-    } catch (error) {
-      console.error(`Redis setex error for key ${key}:`, error)
+    } catch (error: unknown) {
+      this.logger.error(`Redis setex error for key ${key}:`, error as Error)
       throw error
     }
   }
@@ -28,50 +32,65 @@ export class RedisBackendService implements ICacheBackend {
   async del(key: string): Promise<void> {
     try {
       await this.redisClient.del(key)
-    } catch (error) {
-      console.error(`Redis del error for key ${key}:`, error)
+    } catch (error: unknown) {
+      this.logger.error(`Redis del error for key ${key}:`, error as Error)
       throw error
     }
   }
 
   async invalidate(pattern?: string): Promise<number> {
     try {
+      let keys: string[]
       if (pattern) {
-        const keys = await this.redisClient.keys(pattern)
-        if (keys.length > 0) {
-          return await this.redisClient.del(keys)
-        }
-        return 0
+        keys = await this.redisClient.keys(pattern)
       } else {
         // Invalidate all keys (be careful in production)
-        const keys = await this.redisClient.keys('*')
-        if (keys.length > 0) {
-          return await this.redisClient.del(keys)
-        }
-        return 0
+        keys = await this.redisClient.keys('*')
       }
-    } catch (error) {
-      console.error('Redis invalidate error:', error)
+      if (keys.length > 0) {
+        return await this.redisClient.del(keys)
+      }
+      return 0
+    } catch (error: unknown) {
+      this.logger.error('Redis invalidate error:', error as Error)
       throw error
     }
   }
 
-  async getStats(): Promise<any> {
+  async getStats(): Promise<unknown> {
     try {
-      const info = await this.redisClient.info()
+      const infoStr = await this.redisClient.info()
+      const info = this.parseRedisInfo(infoStr)
       // Parse relevant stats
       const stats = {
-        connected_clients: info.connected_clients,
-        used_memory: info.used_memory,
-        used_memory_human: info.used_memory_human,
-        total_commands_processed: info.total_commands_processed,
-        uptime_in_seconds: info.uptime_in_seconds,
-        uptime_in_days: info.uptime_in_days,
+        connected_clients: parseInt(info.connected_clients || '0', 10),
+        used_memory: parseInt(info.used_memory || '0', 10),
+        used_memory_human: info.used_memory_human || '0',
+        total_commands_processed: parseInt(
+          info.total_commands_processed || '0',
+          10,
+        ),
+        uptime_in_seconds: parseInt(info.uptime_in_seconds || '0', 10),
+        uptime_in_days: parseInt(info.uptime_in_days || '0', 10),
       }
       return stats
-    } catch (error) {
-      console.error('Redis stats error:', error)
+    } catch (error: unknown) {
+      this.logger.error('Redis stats error:', error as Error)
       throw error
     }
+  }
+
+  private parseRedisInfo(infoStr: string): Record<string, string> {
+    const info: Record<string, string> = {}
+    const lines = infoStr.split('\n')
+    for (const line of lines) {
+      if (line.includes(':')) {
+        const [key, value] = line.split(':', 2)
+        if (key && value !== undefined) {
+          info[key.trim()] = value.trim()
+        }
+      }
+    }
+    return info
   }
 }

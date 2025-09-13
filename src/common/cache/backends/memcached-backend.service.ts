@@ -1,31 +1,32 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Logger } from '@nestjs/common'
 import { ICacheBackend } from '../interfaces/icache-backend.interface'
 import * as memjs from 'memjs'
 
 @Injectable()
 export class MemcachedBackendService implements ICacheBackend {
-  private client: any
+  private client: memjs.Client
+  private readonly logger = new Logger(MemcachedBackendService.name)
 
   constructor() {
     this.client = memjs.Client.create('localhost:11211')
   }
 
-  async get(key: string): Promise<any> {
+  async get(key: string): Promise<unknown> {
     try {
       const value = await this.client.get(key)
       return value ? JSON.parse(value) : null
     } catch (error) {
-      console.error(`Memcached get error for key ${key}:`, error)
+      this.logger.error(`Memcached get error for key ${key}:`, error)
       throw error
     }
   }
 
-  async setex(key: string, seconds: number, value: any): Promise<void> {
+  async setex(key: string, seconds: number, value: unknown): Promise<void> {
     try {
       const serializedValue = JSON.stringify(value)
       await this.client.set(key, serializedValue, { expires: seconds })
     } catch (error) {
-      console.error(`Memcached setex error for key ${key}:`, error)
+      this.logger.error(`Memcached setex error for key ${key}:`, error)
       throw error
     }
   }
@@ -34,24 +35,25 @@ export class MemcachedBackendService implements ICacheBackend {
     try {
       await this.client.delete(key)
     } catch (error) {
-      console.error(`Memcached del error for key ${key}:`, error)
+      this.logger.error(`Memcached del error for key ${key}:`, error)
       throw error
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async invalidate(pattern?: string): Promise<number> {
     try {
       // Memcached limitation: cannot invalidate by pattern
       // This implementation returns 0 as per requirements
       // To actually clear cache, you would need to track all keys
-      return 0
+      return await Promise.resolve(0)
     } catch (error) {
-      console.error('Memcached invalidate error:', error)
+      this.logger.error('Memcached invalidate error:', error)
       throw error
     }
   }
 
-  async getStats(): Promise<any> {
+  async getStats(): Promise<unknown> {
     try {
       // Memcached stats via telnet or stats command
       const stats = await this.client.stats()
@@ -68,9 +70,20 @@ export class MemcachedBackendService implements ICacheBackend {
         bytes: stats.bytes,
       }
     } catch (error) {
-      console.error('Memcached stats error:', error)
+      this.logger.error('Memcached stats error:', error)
       // Return empty stats object instead of throwing
-      return {}
+      return {
+        uptime: 0,
+        version: '',
+        curr_items: 0,
+        total_items: 0,
+        cmd_get: 0,
+        cmd_set: 0,
+        get_hits: 0,
+        get_misses: 0,
+        evictions: 0,
+        bytes: 0,
+      }
     }
   }
 

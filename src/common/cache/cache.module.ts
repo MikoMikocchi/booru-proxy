@@ -17,7 +17,8 @@ import { MemcachedBackendService } from './backends/memcached-backend.service'
     {
       provide: 'CACHE_BACKEND',
       useFactory: (configService: ConfigService) => {
-        const backend = configService.get('CACHE_BACKEND') || 'redis'
+        const rawBackend = configService.get('CACHE_BACKEND') as string
+        const backend = (rawBackend || 'redis') as 'redis' | 'memcached'
         return backend === 'memcached'
           ? MemcachedBackendService
           : RedisBackendService

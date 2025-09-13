@@ -3,21 +3,15 @@ import { ConfigService } from '@nestjs/config'
 import * as crypto from 'crypto'
 import {
   CACHE_PREFIX,
-  DANBOORU_API_PREFIX,
   POSTS_RESOURCE,
-  RANDOM_SUFFIX,
   TAG_SUFFIX,
   LIMIT_SUFFIX,
   RANDOM_SEED_SUFFIX,
-  DANBOORU_POSTS_PATTERN,
-  DANBOORU_TAG_PATTERN,
-  DANBOORU_RANDOM_PATTERN,
-  DANBOORU_ALL_PATTERN,
 } from '../constants'
 import type { ICacheBackend } from './interfaces/icache-backend.interface'
 
 export interface CacheableResponse {
-  [key: string]: any
+  [key: string]: unknown
 }
 
 @Injectable()
@@ -44,9 +38,12 @@ export class CacheService {
     if (cached) {
       try {
         return JSON.parse(cached) as T
-      } catch (error) {
+      } catch (error: unknown) {
+        this.logger.debug(
+          `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+        )
         this.logger.warn(
-          `Failed to parse cached data for key ${key}: ${error.message}`,
+          `Failed to parse cached data for key ${key}: ${error instanceof Error ? error.message : String(error)}`,
         )
         await this.del(key) // Clean invalid cache
         return null
@@ -218,9 +215,12 @@ export class CacheService {
       // Delegate to backend, passing pattern for Redis-specific pattern matching
       // Memcached backend will return 0 as per its limitation
       return await this.backend.invalidate(keyPattern)
-    } catch (error) {
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
       this.logger.error(
-        `Failed to invalidate cache with pattern ${keyPattern}: ${error.message}`,
+        `Failed to invalidate cache with pattern ${keyPattern}: ${error instanceof Error ? error.message : String(error)}`,
       )
       return 0
     }
@@ -237,9 +237,12 @@ export class CacheService {
     try {
       const data = await this.backend.get(key)
       return data ? JSON.stringify(data) : null
-    } catch (error) {
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
       this.logger.error(
-        `Cache backend get error for key ${key}: ${error.message}`,
+        `Cache backend get error for key ${key}: ${error instanceof Error ? error.message : String(error)}`,
       )
       throw error
     }
@@ -251,11 +254,15 @@ export class CacheService {
     value: string,
   ): Promise<void> {
     try {
-      const parsedValue = typeof value === 'string' ? JSON.parse(value) : value
+      const parsedValue: unknown =
+        typeof value === 'string' ? JSON.parse(value) : value
       await this.backend.setex(key, expiresIn, parsedValue)
-    } catch (error) {
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
       this.logger.error(
-        `Cache backend setex error for key ${key}: ${error.message}`,
+        `Cache backend setex error for key ${key}: ${error instanceof Error ? error.message : String(error)}`,
       )
       throw error
     }
@@ -264,9 +271,12 @@ export class CacheService {
   private async del(key: string): Promise<void> {
     try {
       await this.backend.del(key)
-    } catch (error) {
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
       this.logger.error(
-        `Cache backend del error for key ${key}: ${error.message}`,
+        `Cache backend del error for key ${key}: ${error instanceof Error ? error.message : String(error)}`,
       )
       throw error
     }
@@ -275,23 +285,33 @@ export class CacheService {
   async invalidate(pattern?: string): Promise<number> {
     try {
       return await this.backend.invalidate(pattern)
-    } catch (error) {
-      this.logger.error(`Cache backend invalidate error: ${error.message}`)
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
+      this.logger.error(
+        `Cache backend invalidate error: ${error instanceof Error ? error.message : String(error)}`,
+      )
       throw error
     }
   }
 
-  async getStats(): Promise<any> {
+  async getStats(): Promise<Record<string, unknown>> {
     try {
-      return await this.backend.getStats()
-    } catch (error) {
-      this.logger.error(`Cache backend stats error: ${error.message}`)
+      return (await this.backend.getStats()) as Record<string, unknown>
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+      )
+      this.logger.error(
+        `Cache backend stats error: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return {}
     }
   }
 
   // Generic getOrFetch method for unified caching logic
-  async getOrFetch<T = any>(
+  async getOrFetch<T = unknown>(
     key: string,
     fetchFn: () => Promise<T>,
     ttl?: number,
@@ -301,8 +321,13 @@ export class CacheService {
       try {
         this.logger.debug(`Cache hit for key: ${key}`)
         return JSON.parse(cached) as T
-      } catch (error) {
-        this.logger.warn(`Invalid cached data for key ${key}, fetching fresh`)
+      } catch (error: unknown) {
+        this.logger.debug(
+          `Error validation - type: ${typeof error}, isError: ${error instanceof Error}`,
+        )
+        this.logger.warn(
+          `Invalid cached data for key ${key}, fetching fresh: ${error instanceof Error ? error.message : String(error)}`,
+        )
         await this.del(key)
       }
     }

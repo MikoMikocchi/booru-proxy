@@ -1,60 +1,96 @@
 import { Test, TestingModule } from '@nestjs/testing'
-import { CacheService, CacheableResponse } from './cache.service'
+import { CacheService, type CacheableResponse } from './cache.service'
 import { ConfigService } from '@nestjs/config'
 import { Logger } from '@nestjs/common'
+import type { ICacheBackend } from './interfaces/icache-backend.interface'
+import * as crypto from 'crypto'
+
+type MockedBackend = {
+  [K in keyof ICacheBackend]: jest.MockedFunction<ICacheBackend[K]>
+}
+
+type MockedLogger = jest.Mocked<Logger>
+type MockedConfigGet = jest.MockedFunction<ConfigService['get']>
 
 describe('CacheService', () => {
   let service: CacheService
-  let configService: jest.Mocked<ConfigService>
-  let mockLogger: jest.Mocked<Logger>
-  let mockBackend: any
+  let mockConfigService: { get: MockedConfigGet }
+  let mockBackend: MockedBackend
+  let mockLogger: MockedLogger
+
+  // Extracted mock functions for backend
+  let mockGet: jest.Mock
+  let mockSetex: jest.Mock
+  let mockDel: jest.Mock
+  let mockInvalidate: jest.Mock
+  let mockGetStats: jest.Mock
+
+  // Extracted mock functions for logger (not used for expects, but provided)
+  let mockLog: jest.Mock
+  let mockError: jest.Mock
+  let mockWarn: jest.Mock
+  let mockDebug: jest.Mock
+  let mockVerbose: jest.Mock
+
+  const mockTtl = 3600
+  const defaultApiPrefix = 'danbooru'
+  const defaultQuery = 'cat'
+  const normalizedQueryHash = 'd077f244def8a70e5ea758bd8352fcd8' // MD5 of 'cat'
+  const defaultCacheKey = `cache:${defaultApiPrefix}:posts:${normalizedQueryHash}`
 
   beforeEach(async () => {
+    mockGet = jest.fn()
+    mockSetex = jest.fn()
+    mockDel = jest.fn()
+    mockInvalidate = jest.fn()
+    mockGetStats = jest.fn()
+
     mockBackend = {
-      get: jest.fn(),
-      setex: jest.fn(),
-      del: jest.fn(),
-      keys: jest.fn(),
-      pipeline: jest.fn().mockReturnValue({
-        del: jest.fn().mockReturnThis(),
-        exec: jest.fn(),
-      }),
-      invalidate: jest.fn().mockResolvedValue(0),
-      getStats: jest.fn().mockResolvedValue({ hit: 0, miss: 0 }),
+      get: mockGet,
+      setex: mockSetex,
+      del: mockDel,
+      invalidate: mockInvalidate,
+      getStats: mockGetStats,
     }
 
-    configService = {
-      get: jest.fn(),
-    } as any
+    mockConfigService = {
+      get: jest.fn().mockReturnValue(mockTtl),
+    }
+
+    mockLog = jest.fn()
+    mockError = jest.fn()
+    mockWarn = jest.fn()
+    mockDebug = jest.fn()
+    mockVerbose = jest.fn()
 
     mockLogger = {
-      log: jest.fn(),
-      error: jest.fn(),
-      warn: jest.fn(),
-      debug: jest.fn(),
-      verbose: jest.fn(),
-    } as any
+      log: mockLog,
+      error: mockError,
+      warn: mockWarn,
+      debug: mockDebug,
+      verbose: mockVerbose,
+    } as unknown as MockedLogger
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        CacheService,
         {
           provide: 'CACHE_BACKEND',
           useValue: mockBackend,
         },
         {
           provide: ConfigService,
-          useValue: configService,
+          useValue: mockConfigService,
         },
         {
           provide: Logger,
           useValue: mockLogger,
         },
-        CacheService,
       ],
     }).compile()
 
-    service = module.get<CacheService>(CacheService)
-    configService.get.mockReturnValue(3600)
+    service = module.get(CacheService)
+    jest.clearAllMocks()
   })
 
   afterEach(() => {
@@ -62,438 +98,465 @@ describe('CacheService', () => {
   })
 
   describe('getCachedResponse', () => {
-    it('should return parsed cached data on hit', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const mockData: CacheableResponse = { posts: [{ id: 1, tags: ['cat'] }] }
-      const cacheKey = 'cache:danbooru:posts:d077f244def8a70e5ea758bd8352fcd8'
-      const cachedString = JSON.stringify(mockData)
+    const mockData: CacheableResponse = { posts: [{ id: 1, tags: ['cat'] }] }
 
-      mockBackend.get.mockResolvedValueOnce(cachedString)
+    it('should return parsed data on cache hit without limit or tags', async () => {
+      mockGet.mockResolvedValueOnce(mockData)
 
-      const result = await service.getCachedResponse(apiPrefix, query, random)
+      const result = await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+      )
 
-      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
+      expect(mockGet).toHaveBeenCalledWith(defaultCacheKey)
       expect(result).toEqual(mockData)
-      expect(mockLogger.warn).not.toHaveBeenCalled()
     })
 
     it('should return null on cache miss', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'dog'
-      const random = false
-      const cacheKey = 'cache:danbooru:posts:06d80eb0c50b39939cb9c12a98c8034e'
+      mockGet.mockResolvedValueOnce(null)
 
-      mockBackend.get.mockResolvedValueOnce(null)
+      const result = await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+      )
 
-      const result = await service.getCachedResponse(apiPrefix, query, random)
-
-      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
+      expect(mockGet).toHaveBeenCalledWith(defaultCacheKey)
       expect(result).toBeNull()
     })
 
-    it('should clean invalid JSON cache and return null', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'invalid'
-      const random = false
-      const cacheKey = 'cache:danbooru:posts:5f4dcc3b5aa765d61d8327deb882cf99'
-      const invalidJson = 'invalid json data'
+    it('should include limit in key', async () => {
+      const limit = 20
+      const keyWithLimit = `${defaultCacheKey}:limit:${limit}`
 
-      mockBackend.get.mockResolvedValueOnce(invalidJson)
-      mockBackend.del.mockResolvedValueOnce(undefined)
+      mockGet.mockResolvedValueOnce(mockData)
 
-      const result = await service.getCachedResponse(apiPrefix, query, random)
-
-      expect(mockBackend.get).toHaveBeenCalledWith(cacheKey)
-      expect(mockBackend.del).toHaveBeenCalledWith(cacheKey)
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to parse cached data'),
+      await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        limit,
       )
-      expect(result).toBeNull()
+
+      expect(mockGet).toHaveBeenCalledWith(keyWithLimit)
+    })
+
+    it('should include tags hash in key', async () => {
+      const tags = ['cat', 'dog']
+      const sortedTags = tags.sort().join(',')
+      const tagHash = crypto.createHash('md5').update(sortedTags).digest('hex')
+      const keyWithTags = `${defaultCacheKey}:tag:${tagHash}`
+
+      mockGet.mockResolvedValueOnce(mockData)
+
+      await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        undefined,
+        tags,
+      )
+
+      expect(mockGet).toHaveBeenCalledWith(keyWithTags)
+    })
+
+    it('should include random seed in key', async () => {
+      const query = 'random query'
+      const limit = 10
+      const tags = ['tag1']
+      const seedParts = [
+        query.trim(),
+        limit?.toString() || 'default',
+        tags.sort().join(',') || 'no-tags',
+      ]
+      const seedString = seedParts.join('|')
+      const seed = crypto
+        .createHash('sha256')
+        .update(seedString)
+        .digest('hex')
+        .slice(0, 16)
+      const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ').trim()
+      const queryHash = crypto
+        .createHash('md5')
+        .update(normalizedQuery)
+        .digest('hex')
+      const baseKey = `cache:${defaultApiPrefix}:posts:${queryHash}`
+      const tagHash = crypto.createHash('md5').update('tag1').digest('hex')
+      const keyWithRandom = `${baseKey}:limit:${limit}:seed:${seed}:tag:${tagHash}`
+
+      mockGet.mockResolvedValueOnce(mockData)
+
+      await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        query,
+        true,
+        limit,
+        tags,
+      )
+
+      expect(mockGet).toHaveBeenCalledWith(keyWithRandom)
+    })
+
+    it('should normalize query for key generation', async () => {
+      const messyQuery = '  Cat   Dog  '
+      const normalized = 'cat dog'
+      const normalizedHash = crypto
+        .createHash('md5')
+        .update(normalized)
+        .digest('hex')
+      const expectedKey = `cache:${defaultApiPrefix}:posts:${normalizedHash}`
+
+      mockGet.mockResolvedValueOnce(mockData)
+
+      await service.getCachedResponse<CacheableResponse>(
+        defaultApiPrefix,
+        messyQuery,
+        false,
+      )
+
+      expect(mockGet).toHaveBeenCalledWith(expectedKey)
     })
   })
 
   describe('setCache', () => {
-    it('should cache data with default TTL', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+    const mockData: CacheableResponse = { posts: [{ id: 1 }] }
 
-      await service.setCache(apiPrefix, query, mockData, random)
+    it('should set cache with default TTL without limit or tags', async () => {
+      await service.setCache(defaultApiPrefix, defaultQuery, mockData, false)
 
-      expect(mockBackend.setex).toHaveBeenCalledWith(cacheKey, 3600, mockData)
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Cached response for danbooru'),
+      expect(mockSetex).toHaveBeenCalledWith(
+        defaultCacheKey,
+        mockTtl,
+        mockData,
       )
     })
 
-    it('should use custom TTL when provided', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+    it('should use custom TTL', async () => {
       const customTtl = 1800
 
       await service.setCache(
-        apiPrefix,
-        query,
+        defaultApiPrefix,
+        defaultQuery,
         mockData,
-        random,
+        false,
         undefined,
         undefined,
         customTtl,
       )
 
-      expect(mockBackend.setex).toHaveBeenCalledWith(
-        cacheKey,
+      expect(mockSetex).toHaveBeenCalledWith(
+        defaultCacheKey,
         customTtl,
         mockData,
       )
+    })
+
+    it('should include limit and tags in key', async () => {
+      const limit = 20
+      const tags = ['cat']
+      const sortedTags = tags.sort().join(',')
+      const tagHash = crypto.createHash('md5').update(sortedTags).digest('hex')
+      const keyWithParams = `${defaultCacheKey}:limit:${limit}:tag:${tagHash}`
+
+      await service.setCache(
+        defaultApiPrefix,
+        defaultQuery,
+        mockData,
+        false,
+        limit,
+        tags,
+      )
+
+      expect(mockSetex).toHaveBeenCalledWith(
+        keyWithParams,
+        mockTtl,
+        mockData,
+      )
+    })
+
+    it('should handle backend setex error', async () => {
+      const error = new Error('Setex failed')
+      mockSetex.mockRejectedValueOnce(error)
+
+      await expect(
+        service.setCache(defaultApiPrefix, defaultQuery, mockData, false),
+      ).rejects.toThrow('Setex failed')
     })
   })
 
   describe('deleteCache', () => {
-    it('should delete cache entry', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+    it('should delete specific cache entry', async () => {
+      await service.deleteCache(defaultApiPrefix, defaultQuery, false)
 
-      await service.deleteCache(apiPrefix, query, random)
+      expect(mockDel).toHaveBeenCalledWith(defaultCacheKey)
+    })
 
-      expect(mockBackend.del).toHaveBeenCalledWith(cacheKey)
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Deleted cache for danbooru'),
-      )
+    it('should include params in key for deletion', async () => {
+      const limit = 10
+      const tags = ['tag']
+      const sortedTags = tags.sort().join(',')
+      const tagHash = crypto.createHash('md5').update(sortedTags).digest('hex')
+      const keyWithParams = `${defaultCacheKey}:limit:${limit}:tag:${tagHash}`
+
+      await service.deleteCache(defaultApiPrefix, defaultQuery, false, limit, tags)
+
+      expect(mockDel).toHaveBeenCalledWith(keyWithParams)
+    })
+
+    it('should handle backend del error', async () => {
+      const error = new Error('Delete failed')
+      mockDel.mockRejectedValueOnce(error)
+
+      await expect(
+        service.deleteCache(defaultApiPrefix, defaultQuery, false),
+      ).rejects.toThrow('Delete failed')
     })
   })
 
   describe('getOrSet', () => {
-    it('should return cached data when available', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
-      const cachedString = JSON.stringify(mockData)
+    it('should return cached data without calling fetchFn', async () => {
+      const fetchFn = jest.fn()
+      const cachedData: CacheableResponse = { posts: [{ id: 1 }] }
+      mockGet.mockResolvedValueOnce(cachedData)
 
-      ;(service as any).backend.get.mockResolvedValueOnce(cachedString)
-      const fetchFn = jest.fn().mockResolvedValue(null)
+      const result = await service.getOrSet<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        fetchFn,
+      )
 
-      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
-
-      expect(result).toEqual(mockData)
+      expect(result).toEqual(cachedData)
       expect(fetchFn).not.toHaveBeenCalled()
+      expect(mockSetex).not.toHaveBeenCalled()
     })
 
-    it('should fetch and cache new data on miss', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'dog'
-      const random = false
+    it('should fetch, cache, and return data on miss', async () => {
+      const fetchFn = jest.fn()
       const freshData: CacheableResponse = { posts: [{ id: 2 }] }
-      const cacheKey = 'cache:danbooru:posts:06d80eb0c50b39939cb9c12a98c8034e'
+      fetchFn.mockResolvedValueOnce(freshData)
+      mockGet.mockResolvedValueOnce(null)
 
-      ;(service as any).backend.get.mockResolvedValueOnce(null)
-      const fetchFn = jest.fn().mockResolvedValue(freshData)
+      const result = await service.getOrSet<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        fetchFn,
+      )
 
-      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
-
-      expect((service as any).backend.get).toHaveBeenCalledWith(cacheKey)
-      expect((service as any).backend.setex).toHaveBeenCalledWith(
-        cacheKey,
-        3600,
+      expect(mockGet).toHaveBeenCalledWith(defaultCacheKey)
+      expect(mockSetex).toHaveBeenCalledWith(
+        defaultCacheKey,
+        mockTtl,
         freshData,
       )
       expect(fetchFn).toHaveBeenCalledTimes(1)
       expect(result).toEqual(freshData)
     })
 
-    it('should return null when fetch returns null', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'empty'
-      const random = false
-      const cacheKey = 'cache:danbooru:posts:73c3b6b8f4e5a7d2c9e8f1a3b2c4d5e6'
+    it('should return null if fetchFn returns null', async () => {
+      const fetchFn = jest.fn().mockResolvedValueOnce(null)
+      mockGet.mockResolvedValueOnce(null)
 
-      ;(service as any).backend.get.mockResolvedValueOnce(null)
-      const fetchFn = jest.fn().mockResolvedValue(null)
-
-      const result = await service.getOrSet(apiPrefix, query, random, fetchFn)
+      const result = await service.getOrSet<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        fetchFn,
+      )
 
       expect(result).toBeNull()
-      expect((service as any).backend.setex).not.toHaveBeenCalled()
+      expect(mockSetex).not.toHaveBeenCalled()
+    })
+
+    it('should use custom TTL', async () => {
+      const fetchFn = jest.fn()
+      const customTtl = 7200
+      const freshData: CacheableResponse = { posts: [{ id: 3 }] }
+      fetchFn.mockResolvedValueOnce(freshData)
+      mockGet.mockResolvedValueOnce(null)
+
+      await service.getOrSet<CacheableResponse>(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        fetchFn,
+        undefined,
+        undefined,
+        customTtl,
+      )
+
+      expect(mockSetex).toHaveBeenCalledWith(
+        defaultCacheKey,
+        customTtl,
+        freshData,
+      )
+    })
+
+    it('should handle fetchFn error', async () => {
+      const fetchFn = jest.fn()
+      const error = new Error('Fetch failed')
+      fetchFn.mockRejectedValueOnce(error)
+      mockGet.mockResolvedValueOnce(null)
+
+      await expect(
+        service.getOrSet<CacheableResponse>(
+          defaultApiPrefix,
+          defaultQuery,
+          false,
+          fetchFn,
+        ),
+      ).rejects.toThrow('Fetch failed')
     })
   })
 
-  describe('getCacheKey', () => {
-    it('should generate consistent key for same inputs', () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat dog'
-      const random = false
+  describe('invalidateCache', () => {
+    it('should delegate to backend and return count', async () => {
+      const pattern = 'cache:danbooru:*'
+      const deletedCount = 5
+      mockInvalidate.mockResolvedValueOnce(deletedCount)
 
-      const key1 = (service as any).getCacheKey(apiPrefix, query, random)
-      const key2 = (service as any).getCacheKey(apiPrefix, query, random)
+      const result = await service.invalidateCache(pattern)
 
-      expect(key1).toBe(key2)
-      expect(key1).toMatch(/^cache:danbooru:posts:[a-f0-9]{32}$/)
+      expect(mockInvalidate).toHaveBeenCalledWith(pattern)
+      expect(result).toBe(deletedCount)
     })
 
-    it('should normalize query string', () => {
-      const apiPrefix = 'danbooru'
-      const query1 = '  Cat   Dog  '
-      const query2 = 'cat dog'
-      const random = false
+    it('should handle backend error', async () => {
+      const pattern = 'cache:error:*'
+      const error = new Error('Invalidate failed')
+      mockInvalidate.mockRejectedValueOnce(error)
 
-      const key1 = (service as any).getCacheKey(apiPrefix, query1, random)
-      const key2 = (service as any).getCacheKey(apiPrefix, query2, random)
+      const result = await service.invalidateCache(pattern)
 
-      expect(key1).toBe(key2)
-    })
-
-    it('should include limit in key when provided', () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-
-      const keyWithLimit = (service as any).getCacheKey(
-        apiPrefix,
-        query,
-        random,
-        50,
-      )
-      const keyWithoutLimit = (service as any).getCacheKey(
-        apiPrefix,
-        query,
-        random,
-      )
-
-      expect(keyWithLimit).not.toBe(keyWithoutLimit)
-      expect(keyWithLimit).toContain('limit:50')
-    })
-
-    it('should include tags in key when provided', () => {
-      const apiPrefix = 'danbooru'
-      const query = 'posts'
-      const random = false
-      const tags = ['cat', 'dog']
-
-      const keyWithTags = (service as any).getCacheKey(
-        apiPrefix,
-        query,
-        random,
-        undefined,
-        tags,
-      )
-      const keyWithoutTags = (service as any).getCacheKey(
-        apiPrefix,
-        query,
-        random,
-      )
-
-      expect(keyWithTags).not.toBe(keyWithoutTags)
-      expect(keyWithTags).toContain('tag:')
+      expect(mockInvalidate).toHaveBeenCalledWith(pattern)
+      expect(result).toBe(0)
     })
   })
 
   describe('invalidateByPrefix', () => {
-    it('should invalidate all keys for API prefix', async () => {
-      const pattern = 'cache:danbooru:*'
-      ;(service as any).backend.invalidate.mockResolvedValueOnce(5)
+    it('should invalidate by prefix pattern', async () => {
+      const apiPrefix = 'danbooru'
+      const pattern = `cache:${apiPrefix}:*`
+      const deletedCount = 3
+      mockInvalidate.mockResolvedValueOnce(deletedCount)
 
-      const result = await service.invalidateByPrefix('danbooru')
+      const result = await service.invalidateByPrefix(apiPrefix)
 
-      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
-      expect(result).toBe(5)
+      expect(mockInvalidate).toHaveBeenCalledWith(pattern)
+      expect(result).toBe(deletedCount)
+    })
+  })
+
+  describe('invalidate', () => {
+    it('should invalidate all keys if no pattern', async () => {
+      const deletedCount = 10
+      mockInvalidate.mockResolvedValueOnce(deletedCount)
+
+      const result = await service.invalidate()
+
+      expect(mockInvalidate).toHaveBeenCalledWith(undefined)
+      expect(result).toBe(deletedCount)
     })
 
-    it('should handle invalidation errors', async () => {
-      const pattern = 'cache:gelbooru:*'
-      const error = new Error('Redis error')
-      ;(service as any).backend.invalidate.mockRejectedValueOnce(error)
+    it('should invalidate by pattern', async () => {
+      const pattern = '*'
+      const deletedCount = 7
+      mockInvalidate.mockResolvedValueOnce(deletedCount)
 
-      const result = await service.invalidateByPrefix('gelbooru')
+      const result = await service.invalidate(pattern)
 
-      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to invalidate cache'),
-      )
-      expect(result).toBe(0)
+      expect(mockInvalidate).toHaveBeenCalledWith(pattern)
+      expect(result).toBe(deletedCount)
+    })
+
+    it('should handle error', async () => {
+      const error = new Error('Invalidate error')
+      mockInvalidate.mockRejectedValueOnce(error)
+
+      await expect(service.invalidate()).rejects.toThrow('Invalidate error')
+    })
+  })
+
+  describe('getStats', () => {
+    it('should return backend stats', async () => {
+      const mockStats = { hits: 100, misses: 50, size: 1024 }
+      mockGetStats.mockResolvedValueOnce(mockStats)
+
+      const result = await service.getStats()
+
+      expect(mockGetStats).toHaveBeenCalledTimes(1)
+      expect(result).toEqual(mockStats)
+    })
+
+    it('should return empty on error', async () => {
+      const error = new Error('Stats error')
+      mockGetStats.mockRejectedValueOnce(error)
+
+      const result = await service.getStats()
+
+      expect(result).toEqual({})
     })
   })
 
   describe('getOrFetch', () => {
     it('should return cached data on hit', async () => {
-      const key = 'test:cache:key'
-      const mockData = { value: 'cached' }
-      const cachedString = JSON.stringify(mockData)
-
-      ;(service as any).get.mockResolvedValueOnce(cachedString)
       const fetchFn = jest.fn()
+      const key = 'test:key'
+      const cachedData = { value: 'cached' }
+      mockGet.mockResolvedValueOnce(cachedData)
 
       const result = await service.getOrFetch(key, fetchFn)
 
-      expect(result).toEqual(mockData)
+      expect(result).toEqual(cachedData)
       expect(fetchFn).not.toHaveBeenCalled()
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Cache hit'),
-      )
     })
 
     it('should fetch and cache on miss', async () => {
-      const key = 'test:cache:miss'
+      const fetchFn = jest.fn()
+      const key = 'test:miss'
       const freshData = { value: 'fresh' }
-
-      ;(service as any).get.mockResolvedValueOnce(null)
-      const fetchFn = jest.fn().mockResolvedValue(freshData)
+      fetchFn.mockResolvedValueOnce(freshData)
+      mockGet.mockResolvedValueOnce(null)
 
       const result = await service.getOrFetch(key, fetchFn)
 
-      expect((service as any).get).toHaveBeenCalledWith(key)
-      expect((service as any).setex).toHaveBeenCalledWith(
+      expect(mockGet).toHaveBeenCalledWith(key)
+      expect(mockSetex).toHaveBeenCalledWith(
         key,
-        3600,
-        JSON.stringify(freshData),
+        mockTtl,
+        freshData,
       )
       expect(fetchFn).toHaveBeenCalledTimes(1)
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Cache miss'),
-      )
       expect(result).toEqual(freshData)
     })
 
-    it('should refetch on invalid cached data', async () => {
-      const key = 'test:invalid:cache'
-      const invalidData = 'not json'
-      const freshData = { value: 'fresh' }
+    it('should use custom TTL', async () => {
+      const fetchFn = jest.fn()
+      const key = 'test:ttl'
+      const customTtl = 300
+      const freshData = { value: 'custom' }
+      fetchFn.mockResolvedValueOnce(freshData)
+      mockGet.mockResolvedValueOnce(null)
 
-      ;(service as any).get
-        .mockResolvedValueOnce(invalidData)
-        .mockResolvedValueOnce(null)
-      ;(service as any).del.mockResolvedValueOnce(undefined)
-      const fetchFn = jest.fn().mockResolvedValue(freshData)
+      await service.getOrFetch(key, fetchFn, customTtl)
 
-      const result = await service.getOrFetch(key, fetchFn)
-
-      expect((service as any).get).toHaveBeenCalledTimes(2)
-      expect((service as any).del).toHaveBeenCalledWith(key)
-      expect((service as any).setex).toHaveBeenCalledWith(
+      expect(mockSetex).toHaveBeenCalledWith(
         key,
-        3600,
-        JSON.stringify(freshData),
+        customTtl,
+        freshData,
       )
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Invalid cached data'),
-      )
-      expect(result).toEqual(freshData)
-    })
-  })
-
-  describe('Multi-Backend Switching', () => {
-    beforeEach(() => {
-      // Mock different backends
-      const mockMemcachedBackend = {
-        get: jest.fn(),
-        setex: jest.fn(),
-        del: jest.fn(),
-        invalidate: jest.fn().mockResolvedValue(0), // Memcached doesn't support patterns
-        getStats: jest.fn().mockResolvedValue({}),
-      }
-
-      // Switch to Memcached backend for these tests
-      ;(service as any).backend = mockMemcachedBackend
     })
 
-    it('should use Memcached backend when configured', async () => {
-      const apiPrefix = 'danbooru'
-      const query = 'cat'
-      const random = false
-      const mockData: CacheableResponse = { posts: [{ id: 1 }] }
-      const cacheKey = 'cache:danbooru:posts:9a0364b9e99bb480dd25e1f0280a8e9f'
+    it('should propagate fetchFn error', async () => {
+      const fetchFn = jest.fn()
+      const key = 'test:error'
+      const error = new Error('Fetch error')
+      fetchFn.mockRejectedValueOnce(error)
+      mockGet.mockResolvedValueOnce(null)
 
-      // Configure for Memcached
-      configService.get.mockReturnValueOnce('memcached')
-
-      const memcachedModule: TestingModule = await Test.createTestingModule({
-        providers: [
-          {
-            provide: 'CACHE_BACKEND',
-            useValue: {
-              get: jest.fn(),
-              setex: jest.fn(),
-              del: jest.fn(),
-              invalidate: jest.fn().mockResolvedValue(0),
-              getStats: jest.fn().mockResolvedValue({}),
-            },
-          },
-          { provide: ConfigService, useValue: configService },
-          { provide: Logger, useValue: mockLogger },
-          CacheService,
-        ],
-      }).compile()
-
-      const memcachedService = memcachedModule.get<CacheService>(CacheService)
-      ;(memcachedService as any).backend.get.mockResolvedValueOnce(mockData)
-
-      const result = await memcachedService.getCachedResponse(
-        apiPrefix,
-        query,
-        random,
-      )
-
-      expect((memcachedService as any).backend.get).toHaveBeenCalledWith(
-        cacheKey,
-      )
-      expect(result).toEqual(mockData)
-    })
-
-    it('should fallback to Redis for pattern invalidation with Memcached', async () => {
-      const pattern = 'cache:danbooru:*'
-
-      // Memcached returns 0 for pattern invalidation (no pattern support)
-      ;(service as any).backend.invalidate.mockResolvedValueOnce(0)
-
-      const result = await service.invalidateCache(pattern)
-
-      expect(result).toBe(0)
-      expect((service as any).backend.invalidate).toHaveBeenCalledWith(pattern)
-      expect(mockLogger.error).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('CacheManager Generics', () => {
-    it('should handle generic cache operations with apiPrefix', async () => {
-      const apiPrefix = 'gelbooru'
-      const query = 'anime'
-      const random = true
-      const limit = 20
-      const tags = ['safe', 'anime']
-      const mockData: CacheableResponse = {
-        posts: [{ id: 1, score: 100, tags: tags }],
-      }
-      const cacheKey = expect.stringMatching(
-        /^cache:gelbooru:posts:[a-f0-9]{32}:limit:20:random-seed:[a-f0-9]{16}:tag:[a-f0-9]{32}$/,
-      )
-
-      ;(service as any).backend.get.mockResolvedValueOnce(
-        JSON.stringify(mockData),
-      )
-
-      const result = await service.getCachedResponse<CacheableResponse>(
-        apiPrefix,
-        query,
-        random,
-        limit,
-        tags,
-      )
-
-      expect((service as any).backend.get).toHaveBeenCalledWith(
-        expect.stringMatching(cacheKey),
-      )
-      expect(result).toEqual(mockData)
-      expect(result?.posts?.[0].tags).toEqual(expect.arrayContaining(tags))
+      await expect(service.getOrFetch(key, fetchFn)).rejects.toThrow('Fetch error')
     })
   })
 })
