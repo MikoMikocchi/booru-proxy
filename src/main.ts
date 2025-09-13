@@ -142,8 +142,6 @@ async function bootstrap() {
       },
     })
 
-    logger.log('Microservice started (Redis streams)')
-
     app.useGlobalPipes(
       new ValidationPipe({
         transform: true,

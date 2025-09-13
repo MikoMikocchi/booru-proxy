@@ -92,5 +92,8 @@
     "transformIgnorePatterns": [
       "/node_modules/(?!uuid)/"
     ]
+  },
+  "overrides": {
+    "@nestjs/terminus": "^11.0.0"
   }
 }
