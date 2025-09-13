@@ -1,5 +1,3 @@
-import { Observable } from 'rxjs'
-
 export interface ApiConfig {
   baseUrl: string
   apiKey?: string
@@ -13,7 +11,7 @@ export interface ApiConfig {
   }
 }
 
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   data: T
   metadata?: {
     total?: number
@@ -28,9 +26,9 @@ export interface ApiResponse<T = any> {
 }
 
 export interface IApiProvider {
-  getApiService(): any
+  getApiService(): unknown
   getName(): string
   getConfig(): ApiConfig
   getStreamNames(): string[]
-  sanitizeResponse(response: ApiResponse<any>): ApiResponse<any>
+  sanitizeResponse(response: ApiResponse<unknown>): ApiResponse<unknown>
 }

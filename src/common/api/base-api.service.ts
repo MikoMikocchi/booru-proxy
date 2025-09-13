@@ -1,10 +1,11 @@
 import { Injectable, Logger, Inject } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import axios, { AxiosInstance, AxiosError } from 'axios'
+import axios, { AxiosInstance } from 'axios'
 import axiosRetry from 'axios-retry'
+import * as crypto from 'crypto'
 import Redis from 'ioredis'
 import { ApiResponse, ApiConfig } from './base-api.interface'
-import { CacheService } from '../cache/cache.service'
+import { CacheService, CacheableResponse } from '../cache/cache.service'
 
 export type { ApiConfig, ApiResponse } from './base-api.interface'
 
@@ -29,7 +30,10 @@ export abstract class BaseApiService {
           error.response?.status === 429 &&
           error.response.headers['retry-after']
         ) {
-          const retryAfter = parseInt(error.response.headers['retry-after'], 10)
+          const retryAfterStr = error.response?.headers?.['retry-after'] as
+            | string
+            | undefined
+          const retryAfter = retryAfterStr ? parseInt(retryAfterStr, 10) : NaN
           if (!isNaN(retryAfter)) {
             this.logger.warn(
               `Respecting 429 retry-after header: ${retryAfter} seconds`,
@@ -54,16 +58,11 @@ export abstract class BaseApiService {
   protected abstract getApiConfig(): ApiConfig
   protected abstract getBaseEndpoint(): string
 
-  // Legacy method - axios-retry now handles retries
-  protected setupRetryInterceptor(): void {
-    // No-op: axios-retry interceptor is configured in constructor
-  }
-
   async fetchPosts(
     query: string,
     limit = 1,
     random = true,
-  ): Promise<any | null> {
+  ): Promise<Record<string, unknown> | null> {
     const apiPrefix = this.getName()
 
     if (this.cacheService && !random) {
@@ -86,32 +85,44 @@ export abstract class BaseApiService {
       )
       const endpoint = this.buildEndpoint(query, limit, random)
       const response = await this.httpClient.get<ApiResponse>(endpoint)
-      const posts = response.data?.data
+      const rawPosts = response.data?.data
+      this.logger.log(
+        `${this.constructor.name}: Response data type: ${typeof response.data}`,
+      )
+      if (response.data && typeof response.data === 'object') {
+        this.logger.log(
+          `${this.constructor.name}: Sample response structure: ${JSON.stringify(Object.keys(response.data).slice(0, 5))}`,
+        )
+      }
 
-      if (!posts || posts.length === 0) {
+      if (!rawPosts || !Array.isArray(rawPosts) || rawPosts.length === 0) {
         this.logger.warn(
           `${this.constructor.name}: No posts found for query: ${query}`,
         )
         return null
       }
 
-      const post = posts[0]
+      const post = rawPosts[0] as Record<string, unknown>
+      this.logger.log(
+        `${this.constructor.name}: Post data type before sanitize: ${typeof post}`,
+      )
       const sanitizedPost = this.sanitizeResponse(post)
 
       if (!random && this.cacheService) {
         await this.cacheService.setCache(
           apiPrefix,
           query,
-          sanitizedPost,
+          sanitizedPost as CacheableResponse,
           random,
         )
       }
 
       return sanitizedPost
     } catch (error) {
+      const err = error as Error
       this.logger.error(
-        `${this.constructor.name}: API error for query ${query}: ${(error as Error).message}`,
-        error.stack,
+        `${this.constructor.name}: API error for query ${query}: ${err.message}`,
+        err.stack,
       )
       return null
     }
@@ -142,7 +153,7 @@ export abstract class BaseApiService {
   protected async cacheResponse(
     apiPrefix: string,
     query: string,
-    data: any,
+    data: CacheableResponse,
     random: boolean,
     ttl?: number,
   ): Promise<void> {
@@ -195,11 +206,14 @@ export abstract class BaseApiService {
 
     // 2. Query-specific invalidation with optional random filtering
     const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ')
-    const queryHash = require('crypto')
+    const queryHash = crypto
       .createHash('md5')
       .update(normalizedQuery)
       .digest('hex')
 
+    this.logger.log(
+      `${this.constructor.name}: Query hash type: ${typeof queryHash}, Length: ${queryHash.length}`,
+    )
     // Build specific pattern for this query
     let queryPattern = `${cachePrefix}:${apiPrefix}:posts:${queryHash}`
 
@@ -223,10 +237,19 @@ export abstract class BaseApiService {
     return deletedCount
   }
 
-  protected sanitizeResponse(data: any): any {
+  protected sanitizeResponse(data: unknown): Record<string, unknown> {
+    this.logger.log(
+      `${this.constructor.name}: Sanitizing data type: ${typeof data}`,
+    )
+    if (data && typeof data === 'object' && data !== null) {
+      const objData = data as Record<string, unknown>
+      this.logger.log(
+        `${this.constructor.name}: Sanitizing keys: ${JSON.stringify(Object.keys(objData).slice(0, 5))}`,
+      )
+    }
     // Default sanitization - override in subclasses for specific fields
-    if (typeof data === 'object') {
-      const sanitized = { ...data }
+    if (data && typeof data === 'object' && data !== null) {
+      const sanitized: Record<string, unknown> = { ...data }
       // Sanitize common string fields (override in child classes)
       ;[
         'tag_string_general',
@@ -234,13 +257,14 @@ export abstract class BaseApiService {
         'tag_string_copyright',
         'source',
       ].forEach(field => {
-        if (typeof sanitized[field] === 'string') {
-          sanitized[field] = this.sanitizeString(sanitized[field])
+        const fieldValue = sanitized[field]
+        if (typeof fieldValue === 'string') {
+          sanitized[field] = this.sanitizeString(fieldValue)
         }
       })
       return sanitized
     }
-    return data
+    return data as Record<string, unknown>
   }
 
   protected sanitizeString(str: string): string {
