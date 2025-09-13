@@ -1,26 +1,18 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-  OnModuleDestroy,
-  Inject,
-} from '@nestjs/common'
+import { Injectable, Logger, Inject } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import {
   DanbooruResponse,
   DanbooruSuccessResponse,
   DanbooruErrorResponse,
 } from './interfaces/danbooru.interface'
+import { CacheableResponse } from '../common/cache/cache.service'
 import { DanbooruPost } from './dto/danbooru-post.class'
 import { addToDLQ } from '../common/queues/utils/dlq.util'
 import {
-  REQUESTS_STREAM,
   RESPONSES_STREAM,
-  DLQ_STREAM,
   QUERY_LOCK_TIMEOUT_SECONDS,
   DANBOORU_TAG_PATTERN,
   DANBOORU_RANDOM_PATTERN,
-  DANBOORU_POSTS_PATTERN,
 } from '../common/constants'
 import { DanbooruApiService } from './danbooru-api.service'
 import { CacheService } from '../common/cache/cache.service'
@@ -87,16 +79,15 @@ export class DanbooruService {
       }
 
       // Start heartbeat to extend lock every 10s
-      heartbeatInterval = setInterval(async () => {
+      heartbeatInterval = setInterval(() => {
         if (lockValue) {
-          const extended = await this.lockUtil.extendLock(
+          this.lockUtil.extendLock(
             lockKey,
             lockValue,
             QUERY_LOCK_TIMEOUT_SECONDS,
-          )
-          if (!extended) {
-            this.logger.warn(`Failed to extend lock for ${lockKey} in service`)
-          }
+          ).catch((err) => {
+            this.logger.warn(`Failed to extend lock for ${lockKey} in service: ${(err as Error)?.message || String(err)}`, jobId)
+          })
         }
       }, 10000)
 
@@ -150,14 +141,14 @@ export class DanbooruService {
         return error
       }
 
-      const responseData = this.buildSuccessResponse(post, jobId)
+      const responseData = this.buildSuccessResponse(post as DanbooruPost, jobId)
       await this.publishResponse(jobId, responseData)
 
       // Cache the successful response using unified key format
       await this.cacheService.setCache(
         'danbooru',
         query,
-        responseData,
+        responseData as CacheableResponse,
         random,
         limit,
         tags,

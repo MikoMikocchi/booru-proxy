@@ -4,6 +4,7 @@ export interface DanbooruRequest {
 }
 
 export interface DanbooruSuccessResponse {
+  [key: string]: unknown
   type: 'success'
   jobId: string
   imageUrl: string

@@ -3,7 +3,7 @@ import {
   IsString,
   IsOptional,
   IsEnum,
-  IsDateString,
+  IsDate,
   IsUrl,
   Min,
   MaxLength,
@@ -31,7 +31,9 @@ export class DanbooruPost {
   @IsString()
   @MaxLength(1000)
   @Matches(/^[a-z0-9\s_,:()-]+$/, { message: 'Invalid tag characters' })
-  @Transform(({ value }) => value?.toLowerCase().trim())
+  @Transform(
+    ({ value }: { value: string }) => value?.toLowerCase().trim() || '',
+  )
   tag_string_general: string
 
   @IsOptional()
@@ -53,7 +55,9 @@ export class DanbooruPost {
   @Min(0)
   score: number
 
-  @IsDateString()
+  @IsDate()
   @Type(() => Date)
-  created_at: Date
+  created_at: Date;
+
+  [key: string]: unknown
 }

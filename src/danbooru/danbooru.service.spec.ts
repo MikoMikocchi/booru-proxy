@@ -6,72 +6,61 @@ import { CacheManagerService } from '../common/cache/cache-manager.service'
 import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager.service'
 import { ConfigService } from '@nestjs/config'
 import Redis from 'ioredis'
-import * as dlqUtil from '../common/queues/utils/dlq.util'
 import { Logger } from '@nestjs/common'
 import * as crypto from 'crypto'
+import { LockUtil } from '../common/redis/utils/lock.util'
 
 jest.mock('./danbooru-api.service')
 jest.mock('../common/cache/cache.service')
 jest.mock('../common/cache/cache-manager.service')
 jest.mock('../common/rate-limit/rate-limit-manager.service')
-jest.mock('../common/queues/utils/dlq.util')
 jest.mock('ioredis')
 jest.mock('crypto')
+jest.mock('../common/redis/utils/lock.util')
 
-const mockDanbooruApiService = jest.mocked(DanbooruApiService)
-const mockCacheService = jest.mocked(CacheService)
-const mockRateLimitManager = jest.mocked(RateLimitManagerService)
-const mockAddToDLQ = jest.mocked(dlqUtil.addToDLQ)
+const mockLockUtil = {
+  acquireLock: jest.fn(),
+  extendLock: jest.fn(),
+  releaseLock: jest.fn(),
+}
+
 const mockRedis = {
   set: jest.fn(),
   get: jest.fn(),
   del: jest.fn(),
   xadd: jest.fn(),
-} as any
+} as Partial<jest.Mocked<Redis>>
+
 const mockCacheManagerService = {
   get: jest.fn(),
-} as any
-
-interface MockDanbooruApiService {
-  fetchPosts: jest.MockedFunction<any>
-}
-
-interface MockCacheService {
-  getCachedResponse: jest.MockedFunction<any>
-  setCache: jest.MockedFunction<any>
-  invalidateCache: jest.MockedFunction<any>
-}
-
-interface MockRateLimitManager {
-  checkRateLimit: jest.MockedFunction<any>
-}
+} as Partial<jest.Mocked<CacheManagerService>>
 
 describe('DanbooruService', () => {
   let service: DanbooruService
-  let mockApiService: MockDanbooruApiService
-  let mockCacheService: MockCacheService
-  let mockRateLimitManager: MockRateLimitManager
+  let mockApiService: jest.Mocked<DanbooruApiService>
+  let mockCacheService: jest.Mocked<CacheService>
+  let mockRateLimitManager: jest.Mocked<RateLimitManagerService>
   let mockConfigService: jest.Mocked<ConfigService>
   let mockLogger: jest.Mocked<Logger>
 
   beforeEach(async () => {
     mockApiService = {
       fetchPosts: jest.fn(),
-    }
+    } as unknown as jest.Mocked<DanbooruApiService>
 
     mockCacheService = {
       getCachedResponse: jest.fn(),
       setCache: jest.fn(),
       invalidateCache: jest.fn().mockResolvedValue(0),
-    }
+    } as unknown as jest.Mocked<CacheService>
 
     mockRateLimitManager = {
       checkRateLimit: jest.fn(),
-    }
+    } as unknown as jest.Mocked<RateLimitManagerService>
 
     mockConfigService = {
       get: jest.fn(),
-    } as any
+    } as unknown as jest.Mocked<ConfigService>
 
     mockLogger = {
       log: jest.fn(),
@@ -79,7 +68,7 @@ describe('DanbooruService', () => {
       error: jest.fn(),
       debug: jest.fn(),
       verbose: jest.fn(),
-    } as any
+    } as unknown as jest.Mocked<Logger>
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -91,6 +80,7 @@ describe('DanbooruService', () => {
         { provide: ConfigService, useValue: mockConfigService },
         { provide: 'REDIS_CLIENT', useValue: mockRedis },
         { provide: Logger, useValue: mockLogger },
+        { provide: LockUtil, useValue: mockLockUtil },
       ],
     }).compile()
 
@@ -118,33 +108,45 @@ describe('DanbooruService', () => {
 
     beforeEach(() => {
       // Mock crypto hash
-      ;(
-        crypto.createHash as jest.MockedFunction<typeof crypto.createHash>
-      ).mockImplementation(
-        () =>
-          ({
-            update: jest.fn().mockReturnThis(),
-            digest: jest.fn().mockReturnValue('test-query-hash'),
-          }) as any,
-      )
+      const mockHash = {
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue('test-query-hash'),
+      }
+
+      ;(crypto.createHash as jest.Mock).mockReturnValue(mockHash as unknown)
+
+      // Mock LockUtil
+
+      mockLockUtil.acquireLock.mockResolvedValue('lock-value')
+
+      mockLockUtil.extendLock.mockResolvedValue(true)
+
+      mockLockUtil.releaseLock.mockResolvedValue(true)
 
       // Mock Redis for lock
-      mockRedis.set.mockResolvedValue('OK')
-      mockRedis.get.mockResolvedValue(jobId)
-      mockRedis.del.mockResolvedValue(1)
-      mockRedis.xadd.mockResolvedValue('1')
+
+      mockRedis.set!.mockResolvedValue('OK')
+
+      mockRedis.get!.mockResolvedValue(jobId)
+
+      mockRedis.del!.mockResolvedValue(1)
+
+      mockRedis.xadd!.mockResolvedValue('1')
     })
 
     it('should process request successfully with cache miss', async () => {
       // Mock rate limit success
+
       mockRateLimitManager.checkRateLimit.mockResolvedValue({
         allowed: true,
-      } as any)
+      } as const)
 
       // Mock cache miss
+
       mockCacheService.getCachedResponse.mockResolvedValue(null)
 
       // Mock API success
+
       mockApiService.fetchPosts.mockResolvedValue(mockPost)
 
       const result = await service.processRequest(jobId, query, clientId)
@@ -158,29 +160,35 @@ describe('DanbooruService', () => {
         rating: 's',
         source: 'source',
         copyright: 'copyright',
+        id: 1,
+        characters: null,
       })
 
       // Verify rate limit check
-      expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        jobId,
-        clientId,
-      )
+
+      expect(
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        mockRateLimitManager.checkRateLimit as jest.Mock,
+      ).toHaveBeenCalledWith('danbooru', jobId, clientId)
 
       // Verify cache miss - service uses random=true (default)
-      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
-        'danbooru',
-        query,
-        true,
-        1,
-        ['cat'],
-      )
+
+      expect(
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        mockCacheService.getCachedResponse as jest.Mock,
+      ).toHaveBeenCalledWith('danbooru', query, true, 1, ['cat'])
 
       // Verify API call with random=true (default)
-      expect(mockApiService.fetchPosts).toHaveBeenCalledWith(query, 1, true)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockApiService.fetchPosts as jest.Mock).toHaveBeenCalledWith(
+        query,
+        1,
+        true,
+      )
 
       // Verify response published with timestamp
-      expect(mockRedis.xadd).toHaveBeenCalledWith(
+
+      expect(mockRedis.xadd as jest.Mock).toHaveBeenCalledWith(
         'danbooru:responses',
         '*',
         'jobId',
@@ -190,7 +198,8 @@ describe('DanbooruService', () => {
       )
 
       // Verify cache set with full signature and random=true
-      expect(mockCacheService.setCache).toHaveBeenCalledWith(
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockCacheService.setCache as jest.Mock).toHaveBeenCalledWith(
         'danbooru',
         query,
         result,
@@ -200,10 +209,15 @@ describe('DanbooruService', () => {
       )
 
       // Verify cache invalidation for random queries
-      expect(mockCacheService.invalidateCache).toHaveBeenCalledTimes(2)
+
+      expect(
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        mockCacheService.invalidateCache as jest.Mock,
+      ).toHaveBeenCalledTimes(2)
 
       // Verify lock released
-      expect(mockRedis.del).toHaveBeenCalledWith(lockKey)
+
+      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(lockKey, 'lock-value')
     })
 
     it('should return cached response when cache hit (random=true)', async () => {
@@ -219,11 +233,13 @@ describe('DanbooruService', () => {
       }
 
       // Mock rate limit success
+
       mockRateLimitManager.checkRateLimit.mockResolvedValue({
         allowed: true,
-      } as any)
+      } as const)
 
       // Mock cache hit
+
       mockCacheService.getCachedResponse.mockResolvedValue(cachedResponse)
 
       const result = await service.processRequest(jobId, query, clientId)
@@ -231,19 +247,19 @@ describe('DanbooruService', () => {
       expect(result).toEqual(cachedResponse)
 
       // Verify cache hit with service default random=true
-      expect(mockCacheService.getCachedResponse).toHaveBeenCalledWith(
-        'danbooru',
-        query,
-        true,
-        1,
-        ['cat'],
-      )
+
+      expect(
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        mockCacheService.getCachedResponse as jest.Mock,
+      ).toHaveBeenCalledWith('danbooru', query, true, 1, ['cat'])
 
       // Should not call API
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockApiService.fetchPosts).not.toHaveBeenCalled()
 
       // Lock should be released
-      expect(mockRedis.del).toHaveBeenCalledWith(lockKey)
+
+      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(lockKey, 'lock-value')
     })
   })
 })

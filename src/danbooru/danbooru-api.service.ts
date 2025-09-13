@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common'
+import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { plainToClass } from 'class-transformer'
 import { validate, ValidationError } from 'class-validator'
@@ -6,10 +6,6 @@ import { DanbooruPost } from './dto/danbooru-post.class'
 import { API_TIMEOUT_MS } from '../common/constants'
 import xss, { escapeHtml } from 'xss'
 import { BaseApiService, ApiConfig } from '../common/api/base-api.service'
-
-interface DanbooruApiResponse {
-  data: DanbooruPost[]
-}
 
 @Injectable()
 export class DanbooruApiService extends BaseApiService {
@@ -42,7 +38,7 @@ export class DanbooruApiService extends BaseApiService {
   }
 
   // Override sanitizeResponse for Danbooru-specific sanitization
-  protected sanitizeResponse(data: any): any {
+  protected sanitizeResponse(data: unknown): Record<string, unknown> {
     const sanitized = super.sanitizeResponse(data)
 
     // Comprehensive Danbooru-specific sanitization using xss library
@@ -70,7 +66,7 @@ export class DanbooruApiService extends BaseApiService {
       'fav_count',
       'comment_count',
       'updater_id',
-    ]
+    ] as const
 
     stringFields.forEach(field => {
       if (sanitized[field] && typeof sanitized[field] === 'string') {
@@ -106,7 +102,7 @@ export class DanbooruApiService extends BaseApiService {
     query: string,
     limit: number = 1,
     random: boolean = true,
-  ): Promise<DanbooruPost | null> {
+  ): Promise<Record<string, unknown> | null> {
     // Use inherited fetchPosts from BaseApiService, which handles caching, logging, and sanitization
     const postData = await super.fetchPosts(query, limit, random)
 
@@ -126,6 +122,6 @@ export class DanbooruApiService extends BaseApiService {
       return null
     }
 
-    return post
+    return post as Record<string, unknown>
   }
 }

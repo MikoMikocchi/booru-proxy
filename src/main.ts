@@ -1,15 +1,17 @@
 import { NestFactory } from '@nestjs/core'
 import { MicroserviceOptions, Transport } from '@nestjs/microservices'
-import { ValidationPipe } from '@nestjs/common'
+import { ValidationPipe, Logger, INestMicroservice } from '@nestjs/common'
 import { AppModule } from './app.module'
 import { ConfigService } from '@nestjs/config'
-import { ModuleRef } from '@nestjs/core'
 import Redis from 'ioredis'
+import * as fs from 'node:fs'
+import type { ConnectionOptions } from 'node:tls'
 
 let redisClient: Redis | undefined
 
 async function gracefulShutdown() {
-  console.log('Shutting down gracefully...')
+  const logger = new Logger('Shutdown')
+  logger.log('Shutting down gracefully...')
   let quitTimedOut = false
   try {
     await app.close()
@@ -24,15 +26,15 @@ async function gracefulShutdown() {
 
       try {
         await Promise.race([quitPromise, timeoutPromise])
-      } catch (timeoutError) {
+      } catch {
         if (quitTimedOut) {
-          console.warn('Redis quit timed out, forcing disconnect')
+          logger.warn('Redis quit timed out, forcing disconnect')
           redisClient.disconnect()
         }
       }
     }
   } catch (error) {
-    console.error('Error during shutdown:', error)
+    logger.error('Error during shutdown', error as Error)
     if (redisClient) {
       // Force disconnect on any error
       redisClient.disconnect()
@@ -42,18 +44,19 @@ async function gracefulShutdown() {
   }
 }
 
-let app: any
+let app: INestMicroservice
 
 async function bootstrap() {
+  const logger = new Logger('Bootstrap')
   try {
     const configService = new ConfigService()
     const redisPassword = configService.get<string>('REDIS_PASSWORD')
     const redisUrlRaw =
       configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
     const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
-    console.log('DEBUG: REDIS_PASSWORD=', redisPassword)
-    console.log('DEBUG: REDIS_URL raw=', redisUrlRaw)
-    console.log('DEBUG: REDIS_USE_TLS=', useTls)
+    logger.debug(`DEBUG: REDIS_PASSWORD=${redisPassword ? '[REDACTED]' : undefined}`)
+    logger.debug(`DEBUG: REDIS_URL raw=${redisUrlRaw}`)
+    logger.debug(`DEBUG: REDIS_USE_TLS=${useTls}`)
 
     // Always parse the raw URL (assumes redis:// protocol)
     const parsedUrl = new URL(redisUrlRaw)
@@ -62,25 +65,17 @@ async function bootstrap() {
     const username = parsedUrl.username || undefined
     const password = parsedUrl.password || redisPassword || undefined
 
-    console.log(
-      'DEBUG: Parsed - host:',
-      host,
-      'port:',
-      port,
-      'username:',
-      username,
-      'useTls:',
-      useTls,
+    logger.debug(
+      `DEBUG: Parsed - host: ${host}, port: ${port}, username: ${username}, useTls: ${useTls}`,
     )
 
-    let tlsConfig: any = undefined
+    let tlsConfig: ConnectionOptions | undefined = undefined
     if (useTls) {
       const caPath = configService.get<string>('REDIS_TLS_CA')
       const certPath = configService.get<string>('REDIS_TLS_CERT')
       const keyPath = configService.get<string>('REDIS_TLS_KEY')
 
       if (caPath && certPath && keyPath) {
-        const fs = require('fs')
         try {
           const caContent = fs.readFileSync(caPath, 'utf8')
           const certContent = fs.readFileSync(certPath, 'utf8')
@@ -101,20 +96,17 @@ async function bootstrap() {
             cert: [certContent],
             key: keyContent,
             rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
-            checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
-          }
+          } as ConnectionOptions
         } catch (error) {
-          console.warn('Failed to load TLS certificates:', error.message)
+          logger.warn('Failed to load TLS certificates', error as Error)
           tlsConfig = {
             rejectUnauthorized: false, // Fallback for dev
-            checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
-          }
+          } as ConnectionOptions
         }
       } else {
         tlsConfig = {
           rejectUnauthorized: false, // Fallback if paths not provided
-          checkServerIdentity: () => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
-        }
+        } as ConnectionOptions
       }
     }
 
@@ -150,7 +142,7 @@ async function bootstrap() {
       },
     })
 
-    console.log('Microservice started (Redis streams)')
+    logger.log('Microservice started (Redis streams)')
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -165,12 +157,20 @@ async function bootstrap() {
     await app.listen()
 
     // Set up signal handlers after full initialization
-    process.on('SIGINT', gracefulShutdown)
-    process.on('SIGTERM', gracefulShutdown)
+    process.on('SIGINT', () => {
+      void gracefulShutdown().catch(err => logger.error('SIGINT shutdown error', err as Error))
+    })
+    process.on('SIGTERM', () => {
+      void gracefulShutdown().catch(err => logger.error('SIGTERM shutdown error', err as Error))
+    })
   } catch (error) {
-    console.error('Failed to start microservice:', error)
+    logger.error('Failed to start microservice', error as Error)
     process.exit(1)
   }
 }
 
-bootstrap()
+void bootstrap().catch((err) => {
+  const logger = new Logger('Bootstrap')
+  logger.error('Bootstrap failed', err as Error)
+  process.exit(1)
+})
