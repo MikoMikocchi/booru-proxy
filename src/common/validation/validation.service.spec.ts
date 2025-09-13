@@ -1,652 +1,396 @@
 import { Test, TestingModule } from '@nestjs/testing'
+import { ConfigService } from '@nestjs/config'
+import { plainToClass } from 'class-transformer'
+import { validate } from 'class-validator'
+import { createHmac, Hmac } from 'crypto'
+import { Logger } from '@nestjs/common'
+import {
+  RateLimitManagerService,
+  type RateLimitError,
+  type RateLimitResult,
+} from '../rate-limit/rate-limit-manager.service'
 import {
   ValidationService,
-  ValidationResult,
-  ValidationError,
+  type ApiValidationConfig,
+  type ValidationError,
 } from './validation.service'
-import { ConfigService } from '@nestjs/config'
-import { RateLimitManagerService } from '../rate-limit/rate-limit-manager.service'
-import { Logger } from '@nestjs/common'
-import * as classTransformer from 'class-transformer'
-import * as classValidator from 'class-validator'
-import * as crypto from 'crypto'
 
-class TestDto {
-  tags?: string
-  limit?: number
+// Mock DTO class for testing
+class MockDto {
+  testField: string = ''
 }
+
+// Global spies for Logger
+const mockLoggerWarn = jest
+  .spyOn(Logger.prototype, 'warn')
+  .mockImplementation(() => {})
+const mockLoggerDebug = jest
+  .spyOn(Logger.prototype, 'debug')
+  .mockImplementation(() => {})
 
 jest.mock('class-transformer')
 jest.mock('class-validator')
+jest.mock('crypto')
 
-const mockPlainToClass = classTransformer.plainToClass as jest.MockedFunction<
-  typeof classTransformer.plainToClass
+const mockPlainToClass = plainToClass as jest.MockedFunction<
+  typeof plainToClass
 >
-const mockValidate = classValidator.validate as jest.MockedFunction<
-  typeof classValidator.validate
->
-const mockCreateHmac = crypto.createHmac as jest.MockedFunction<
-  typeof crypto.createHmac
->
+const mockValidate = validate as jest.MockedFunction<typeof validate>
+const mockCreateHmac = createHmac as jest.MockedFunction<typeof createHmac>
 
 describe('ValidationService', () => {
   let service: ValidationService
   let mockConfigService: jest.Mocked<ConfigService>
-  let mockRateLimitManager: jest.Mocked<RateLimitManagerService>
-  let mockLogger: jest.Mocked<Logger>
+  let mockRateLimitManagerService: jest.Mocked<RateLimitManagerService>
+  let checkRateLimitMock: jest.Mock<Promise<RateLimitResult>>
+
+  const mockJobData = {
+    jobId: 'test-job-id',
+    apiKey: 'test-api-key',
+    clientId: 'test-client',
+    testField: 'valid-value',
+  } as const
+
+  const mockConfig: ApiValidationConfig = {
+    apiPrefix: 'test-api',
+  }
+
+  const mockHmacConfig: ApiValidationConfig = {
+    apiPrefix: 'test-api',
+    hmacSecret: 'test-secret',
+    allowedMethods: ['hmac'],
+  }
 
   beforeEach(async () => {
+    const configGetMock = jest.fn()
     mockConfigService = {
-      get: jest.fn(),
-    } as any
+      get: configGetMock,
+    } as unknown as jest.Mocked<ConfigService>
 
-    mockRateLimitManager = {
-      checkRateLimit: jest.fn(),
-    } as any
-
-    mockLogger = {
-      log: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-      verbose: jest.fn(),
-    } as any
+    checkRateLimitMock = jest.fn() as jest.Mock<Promise<RateLimitResult>>
+    mockRateLimitManagerService = {
+      checkRateLimit: checkRateLimitMock,
+    } as unknown as jest.Mocked<RateLimitManagerService>
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ValidationService,
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: RateLimitManagerService, useValue: mockRateLimitManager },
+        {
+          provide: RateLimitManagerService,
+          useValue: mockRateLimitManagerService,
+        },
       ],
     }).compile()
 
     service = module.get<ValidationService>(ValidationService)
 
     // Reset mocks
-    mockPlainToClass.mockClear()
-    mockValidate.mockClear()
-    jest.clearAllMocks()
-    mockRateLimitManager.checkRateLimit.mockClear()
+    mockPlainToClass.mockReset()
+    mockValidate.mockReset()
+    mockCreateHmac.mockReset()
+    checkRateLimitMock.mockReset()
+    mockLoggerWarn.mockReset()
+    mockLoggerDebug.mockReset()
   })
 
   afterEach(() => {
     jest.clearAllMocks()
   })
 
+  afterAll(() => {
+    mockLoggerWarn.mockRestore()
+    mockLoggerDebug.mockRestore()
+  })
+
   describe('validateRequest', () => {
-    const validJobData: { [key: string]: string } = {
-      jobId: 'test-job-123',
-      apiKey: 'valid-hmac',
-      tags: 'cat rating:safe',
-      limit: '10',
-      clientId: 'user123',
-    }
-
-    const config: any = {
-      apiPrefix: 'danbooru',
-      hmacSecret: 'test-secret',
-      allowedMethods: ['hmac'],
-    }
-
-    it('should validate successfully when all checks pass', async () => {
-      // Mock DTO validation
-      const mockDto = new TestDto()
-      mockDto.tags = 'cat rating:safe'
-      mockDto.limit = 10
-      mockPlainToClass.mockReturnValue(mockDto)
+    it('should return valid result on successful validation', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
       mockValidate.mockResolvedValue([])
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
+      mockConfig.customValidator = undefined
 
-      // Mock authentication
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(null)
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockConfig,
+      )
 
-      // Mock rate limit
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: true,
-      } as any)
-
-      config.customValidator = undefined
-
-      const result = (await service.validateRequest(
-        validJobData,
-        TestDto,
-        config,
-      ))
-
-      if (result.valid) {
-        expect(result.valid).toBe(true)
-        expect(result.dto).toBe(mockDto)
-        expect(result.dto.tags).toBe('cat rating:safe')
-        expect(result.dto.limit).toBe(10)
-        expect(mockLogger.debug).toHaveBeenCalledWith(
-          'Validation successful for danbooru job test-job-123',
-        )
-        expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-          'danbooru',
-          'test-job-123',
-          'user123',
-        )
-      } else {
-        fail('Validation should have passed')
-      }
+      // Assert
+      expect(result.valid).toBe(true)
+      expect((result as { dto: MockDto }).dto).toBe(mockDtoInstance)
+      expect(mockValidate).toHaveBeenCalledWith(mockDtoInstance)
+      expect(checkRateLimitMock).toHaveBeenCalledWith(
+        mockConfig.apiPrefix,
+        mockJobData.jobId,
+        mockJobData.clientId,
+      )
+      expect(mockLoggerDebug).toHaveBeenCalledWith(
+        `Validation successful for ${mockConfig.apiPrefix} job ${mockJobData.jobId}`,
+      )
     })
 
-    it('should fail on DTO validation errors', async () => {
-      mockPlainToClass.mockReturnValue(new TestDto())
-      mockValidate.mockResolvedValue([
-        {
-          property: 'tags',
-          constraints: { isNotEmpty: 'tags should not be empty' },
-        } as any,
-      ])
+    it('should return error on DTO validation failure', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
+      const validationErrors = [
+        { property: 'testField', constraints: { isString: 'must be string' } },
+      ]
+      mockValidate.mockResolvedValue(validationErrors)
 
-      const result = (await service.validateRequest(
-        validJobData,
-        TestDto,
-        config,
-      ))
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockConfig,
+      )
 
-      if (!result.valid) {
-        expect(result.valid).toBe(false)
-        expect(result.error.code).toBe('INVALID_DTO')
-        expect(result.error.error).toBe('Invalid request format')
-        expect(result.error.apiPrefix).toBe('danbooru')
-        expect(result.error.jobId).toBe('test-job-123')
-        expect(mockLogger.warn).toHaveBeenCalledWith(
-          expect.stringContaining(
-            'DTO validation failed for danbooru job test-job-123',
-          ),
-        )
-        expect(mockRateLimitManager.checkRateLimit).not.toHaveBeenCalled()
-      } else {
-        fail('Validation should have failed')
-      }
-    })
-
-    it('should fail on authentication validation', async () => {
-      mockPlainToClass.mockReturnValue(new TestDto())
-      mockValidate.mockResolvedValue([])
-
-      const authError: ValidationError = {
+      // Assert
+      expect(result.valid).toBe(false)
+      expect((result as { error: ValidationError }).error).toEqual({
         type: 'error',
-        jobId: 'test-job-123',
+        jobId: mockJobData.jobId,
+        error: 'Invalid request format',
+        code: 'INVALID_DTO',
+        apiPrefix: mockConfig.apiPrefix,
+      })
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        `DTO validation failed for ${mockConfig.apiPrefix} job ${mockJobData.jobId}: ${JSON.stringify(validationErrors)}`,
+        mockJobData.jobId,
+      )
+      expect(checkRateLimitMock).not.toHaveBeenCalled()
+    })
+
+    it('should return error on missing API key', async () => {
+      // Arrange
+      const jobDataWithoutKey = { ...mockJobData, apiKey: '' }
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
+      mockValidate.mockResolvedValue([])
+
+      // Act
+      const result = await service.validateRequest(
+        jobDataWithoutKey,
+        MockDto,
+        mockConfig,
+      )
+
+      // Assert
+      expect(result.valid).toBe(false)
+      expect((result as { error: ValidationError }).error).toEqual({
+        type: 'error',
+        jobId: jobDataWithoutKey.jobId,
         error: 'Missing API key',
         code: 'AUTH_FAILED',
-        apiPrefix: 'danbooru',
-      }
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(authError)
-
-      const result = (await service.validateRequest(
-        validJobData,
-        TestDto,
-        config,
-      ))
-
-      if (!result.valid) {
-        expect(result.valid).toBe(false)
-        expect(result.error).toEqual(authError)
-        expect(mockRateLimitManager.checkRateLimit).not.toHaveBeenCalled()
-      } else {
-        fail('Validation should have failed')
-      }
+        apiPrefix: mockConfig.apiPrefix,
+      })
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        `Missing API key for ${mockConfig.apiPrefix} job ${jobDataWithoutKey.jobId}`,
+      )
+      expect(checkRateLimitMock).not.toHaveBeenCalled()
     })
 
-    it('should fail on custom validator error', async () => {
-      mockPlainToClass.mockReturnValue(new TestDto())
+    it('should return error on invalid HMAC', async () => {
+      // Arrange
+      mockPlainToClass.mockReturnValue(new MockDto())
       mockValidate.mockResolvedValue([])
+      const mockHmacInstance: Partial<jest.Mocked<Hmac>> = {
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue('invalid-hmac'),
+      }
+      mockCreateHmac.mockReturnValue(mockHmacInstance as unknown as Hmac)
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
 
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(null)
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockHmacConfig,
+      )
 
+      // Assert
+      expect(result.valid).toBe(false)
+      expect((result as { error: ValidationError }).error).toEqual({
+        type: 'error',
+        jobId: mockJobData.jobId,
+        error: 'Invalid authentication',
+        code: 'AUTH_FAILED',
+        apiPrefix: mockHmacConfig.apiPrefix,
+      })
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        `Invalid HMAC for ${mockHmacConfig.apiPrefix} job ${mockJobData.jobId}`,
+      )
+      expect(mockCreateHmac).toHaveBeenCalledWith(
+        'sha256',
+        mockHmacConfig.hmacSecret,
+      )
+      expect(mockHmacInstance.update).toHaveBeenCalledWith(
+        JSON.stringify(mockJobData),
+      )
+      expect(mockHmacInstance.digest).toHaveBeenCalledWith('hex')
+      expect(checkRateLimitMock).not.toHaveBeenCalled()
+    })
+
+    it('should succeed with valid HMAC', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
+      mockValidate.mockResolvedValue([])
+      const mockHmacInstance: Partial<jest.Mocked<Hmac>> = {
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue(mockJobData.apiKey), // Matches apiKey
+      }
+      mockCreateHmac.mockReturnValue(mockHmacInstance as unknown as Hmac)
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
+      mockHmacConfig.customValidator = undefined
+
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockHmacConfig,
+      )
+
+      // Assert
+      expect(result.valid).toBe(true)
+      expect((result as { dto: MockDto }).dto).toBe(mockDtoInstance)
+      expect(mockCreateHmac).toHaveBeenCalledWith(
+        'sha256',
+        mockHmacConfig.hmacSecret,
+      )
+      expect(mockHmacInstance.update).toHaveBeenCalledWith(
+        JSON.stringify(mockJobData),
+      )
+      expect(mockHmacInstance.digest).toHaveBeenCalledWith('hex')
+      expect(checkRateLimitMock).toHaveBeenCalled()
+    })
+
+    it('should return error from custom validator', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
+      mockValidate.mockResolvedValue([])
       const customError: ValidationError = {
         type: 'error',
-        jobId: 'test-job-123',
-        error: 'Custom validation failed',
+        jobId: mockJobData.jobId,
+        error: 'Custom error',
         code: 'CUSTOM_ERROR',
-        apiPrefix: 'danbooru',
+        apiPrefix: mockConfig.apiPrefix,
       }
-      config.customValidator = jest.fn().mockResolvedValue(customError)
+      mockConfig.customValidator = jest.fn().mockResolvedValue(customError)
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
 
-      const result = (await service.validateRequest(
-        validJobData,
-        TestDto,
-        config,
-      ))
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockConfig,
+      )
 
-      if (!result.valid) {
-        expect(result.valid).toBe(false)
-        expect(result.error).toEqual(customError)
-        expect(config.customValidator).toHaveBeenCalledWith(
-          validJobData,
-          config,
-        )
-        expect(mockRateLimitManager.checkRateLimit).not.toHaveBeenCalled()
-      } else {
-        fail('Validation should have failed')
-      }
+      // Assert
+      expect(result.valid).toBe(false)
+      expect((result as { error: ValidationError }).error).toEqual(customError)
+      expect(mockConfig.customValidator).toHaveBeenCalledWith(
+        mockJobData,
+        mockConfig,
+      )
+      expect(checkRateLimitMock).not.toHaveBeenCalled()
     })
 
-    it('should fail on rate limit validation', async () => {
-      mockPlainToClass.mockReturnValue(new TestDto())
+    it('should return error on rate limit exceeded', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
       mockValidate.mockResolvedValue([])
-
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(null)
-      config.customValidator = undefined
-
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
+      mockConfig.customValidator = undefined
+      const rateLimitError: RateLimitError = {
+        type: 'error',
+        jobId: mockJobData.jobId,
+        error: 'Rate limit exceeded',
+        retryAfter: 60,
+        apiPrefix: mockConfig.apiPrefix,
+      }
+      checkRateLimitMock.mockResolvedValue({
         allowed: false,
-        error: { error: 'Rate limit exceeded' } as any,
+        error: rateLimitError,
+      } as RateLimitResult)
+
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        mockConfig,
+      )
+
+      // Assert
+      expect(result.valid).toBe(false)
+      expect((result as { error: ValidationError }).error).toEqual({
+        type: 'error',
+        jobId: mockJobData.jobId,
+        error: 'Rate limit exceeded',
+        code: 'RATE_LIMIT',
+        apiPrefix: mockConfig.apiPrefix,
       })
-
-      const result = (await service.validateRequest(
-        validJobData,
-        TestDto,
-        config,
-      ))
-
-      if (!result.valid) {
-        expect(result.valid).toBe(false)
-        expect(result.error.code).toBe('RATE_LIMIT')
-        expect(result.error.error).toBe('Rate limit exceeded')
-        expect(mockLogger.warn).toHaveBeenCalledWith(
-          expect.stringContaining(
-            'Rate limit validation failed for danbooru job test-job-123',
-          ),
-        )
-      } else {
-        fail('Validation should have failed')
-      }
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        `Rate limit validation failed for ${mockConfig.apiPrefix} job ${mockJobData.jobId}: Rate limit exceeded`,
+        mockJobData.jobId,
+      )
     })
 
-    it('should handle missing jobId gracefully', async () => {
-      const noJobIdData: { [key: string]: string } = {
-        ...validJobData,
-        jobId: 'unknown',
-      }
-
-      mockPlainToClass.mockReturnValue(new TestDto())
+    it('should skip HMAC if not enabled in allowedMethods', async () => {
+      // Arrange
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
       mockValidate.mockResolvedValue([])
-
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(null)
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({ allowed: true })
-      config.customValidator = undefined
-
-      const result = (await service.validateRequest(
-        noJobIdData,
-        TestDto,
-        config,
-      ))
-
-      if (result.valid) {
-        expect(result.valid).toBe(true)
-        expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-          'danbooru',
-          'unknown',
-          'user123',
-        )
-      } else {
-        fail('Validation should have passed')
+      const configNoHmac: ApiValidationConfig = {
+        ...mockHmacConfig,
+        allowedMethods: ['none'],
       }
-    })
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
+      configNoHmac.customValidator = undefined
 
-    it('should skip rate limit if no clientId provided', async () => {
-      const noClientIdData: { [key: string]: string } = {
-        ...validJobData,
-        clientId: 'no-client',
-      }
-
-      mockPlainToClass.mockReturnValue(new TestDto())
-      mockValidate.mockResolvedValue([])
-
-      jest
-        .spyOn(service as any, 'validateAuthentication')
-        .mockResolvedValue(null)
-      config.customValidator = undefined
-
-      const result = (await service.validateRequest(
-        noClientIdData,
-        TestDto,
-        config,
-      ))
-
-      if (result.valid) {
-        expect(result.valid).toBe(true)
-        expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-          'danbooru',
-          'test-job-123',
-          'no-client',
-        )
-      } else {
-        fail('Validation should have passed')
-      }
-    })
-  })
-
-  describe('validateAuthentication', () => {
-    const jobData: { [key: string]: string } = {
-      jobId: 'test-job-123',
-      apiKey: 'test-key',
-      tags: 'cat',
-    }
-
-    const config: any = {
-      apiPrefix: 'danbooru',
-      hmacSecret: 'test-secret',
-      allowedMethods: ['hmac'],
-    }
-
-    it('should pass validation with correct HMAC', async () => {
-      const expectedHmac = 'expected-hmac-hash'
-      const mockHmac = {
-        update: jest.fn().mockReturnThis(),
-        digest: jest.fn().mockReturnValue(expectedHmac),
-      }
-      mockCreateHmac.mockReturnValue(mockHmac as any)
-      jobData.apiKey = expectedHmac
-
-      const result = await (service as any).validateAuthentication(
-        jobData,
-        config,
+      // Act
+      const result = await service.validateRequest(
+        mockJobData,
+        MockDto,
+        configNoHmac,
       )
 
-      expect(result).toBeNull()
-      expect(mockCreateHmac).toHaveBeenCalledWith('sha256', 'test-secret')
-      expect(mockHmac.update).toHaveBeenCalledWith(JSON.stringify(jobData))
-      expect(mockHmac.digest).toHaveBeenCalledWith('hex')
-      expect(mockLogger.warn).not.toHaveBeenCalled()
-    })
-
-    it('should fail validation with missing API key', async () => {
-      const noApiKeyData: { [key: string]: string } = { ...jobData, apiKey: '' }
-
-      const result = await (service as any).validateAuthentication(
-        noApiKeyData,
-        config,
-      )
-
-      expect(result).not.toBeNull()
-      expect(result?.code).toBe('AUTH_FAILED')
-      expect(result?.error).toBe('Missing API key')
-      expect(result?.jobId).toBe('test-job-123')
-      expect(result?.apiPrefix).toBe('danbooru')
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        'Missing API key for danbooru job test-job-123',
-      )
+      // Assert
+      expect(result.valid).toBe(true)
+      expect((result as { dto: MockDto }).dto).toBe(mockDtoInstance)
       expect(mockCreateHmac).not.toHaveBeenCalled()
+      expect(checkRateLimitMock).toHaveBeenCalled()
     })
 
-    it('should fail validation with invalid HMAC', async () => {
-      const invalidHmac = 'invalid-hmac'
-      jobData.apiKey = invalidHmac
-
-      const mockHmac = {
-        update: jest.fn().mockReturnThis(),
-        digest: jest.fn().mockReturnValue('valid-hmac'), // Different from provided
-      }
-      mockCreateHmac.mockReturnValue(mockHmac as any)
-
-      const result = await (service as any).validateAuthentication(
-        jobData,
-        config,
-      )
-
-      expect(result).not.toBeNull()
-      expect(result?.code).toBe('AUTH_FAILED')
-      expect(result?.error).toBe('Invalid authentication')
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        'Invalid HMAC for danbooru job test-job-123',
-      )
-    })
-
-    it('should skip HMAC validation if not enabled', async () => {
-      config.allowedMethods = ['none']
-      jobData.apiKey = 'any-key'
-
-      const result = await (service as any).validateAuthentication(
-        jobData,
-        config,
-      )
-
-      expect(result).toBeNull()
-      expect(mockCreateHmac).not.toHaveBeenCalled()
-    })
-
-    it('should skip HMAC validation if no secret provided', async () => {
-      config.hmacSecret = undefined
-      jobData.apiKey = 'any-key'
-
-      const result = await (service as any).validateAuthentication(
-        jobData,
-        config,
-      )
-
-      expect(result).toBeNull()
-      expect(mockCreateHmac).not.toHaveBeenCalled()
-    })
-
-    it('should validate API key presence even without HMAC', async () => {
-      config.allowedMethods = ['none']
-      config.hmacSecret = undefined
-
-      const noApiKeyData: { [key: string]: string } = { ...jobData, apiKey: '' }
-
-      const result = await (service as any).validateAuthentication(
-        noApiKeyData,
-        config,
-      )
-
-      expect(result).not.toBeNull()
-      expect(result?.code).toBe('AUTH_FAILED')
-      expect(result?.error).toBe('Missing API key')
-    })
-  })
-
-  describe('validateRateLimit', () => {
-    it('should pass when rate limit allows', async () => {
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: true,
-      } as any)
-
-      const result = await (service as any).validateRateLimit(
-        'danbooru',
-        'test-job-123',
-        'user123',
-      )
-
-      expect(result).toBeNull()
-      expect(mockLogger.warn).not.toHaveBeenCalled()
-    })
-
-    it('should fail when rate limit blocks', async () => {
-      const rateLimitError = {
-        allowed: false,
-        error: { error: 'Too many requests' } as any,
-      }
-      mockRateLimitManager.checkRateLimit.mockResolvedValue(rateLimitError)
-
-      const result = await (service as any).validateRateLimit(
-        'danbooru',
-        'test-job-123',
-        'user123',
-      )
-
-      expect(result).not.toBeNull()
-      expect(result?.code).toBe('RATE_LIMIT')
-      expect(result?.error).toBe('Too many requests')
-      expect(result?.jobId).toBe('test-job-123')
-      expect(result?.apiPrefix).toBe('danbooru')
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Rate limit validation failed for danbooru job test-job-123',
-        ),
-      )
-    })
-
-    it('should handle rate limit without clientId', async () => {
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: true,
-      } as any)
-
-      const result = await (service as any).validateRateLimit(
-        'danbooru',
-        'test-job-123',
-      )
-
-      expect(result).toBeNull()
-      expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        'test-job-123',
-        undefined,
-      )
-    })
-  })
-
-  describe('integration scenarios', () => {
-    it('should handle complete validation flow with all components', async () => {
-      const fullJobData: { [key: string]: string } = {
-        jobId: 'integration-test-1',
-        apiKey: 'valid-hmac-key',
-        tags: 'cat rating:safe limit:20',
-        clientId: 'integration-user',
-      }
-
-      const fullConfig: any = {
-        apiPrefix: 'danbooru',
-        hmacSecret: 'integration-secret',
-        allowedMethods: ['hmac'],
-        customValidator: jest.fn().mockResolvedValue(null),
-      }
-
-      // Mock all dependencies
-      const mockDto = new TestDto()
-      mockDto.tags = 'cat rating:safe limit:20'
-      mockDto.limit = 20
-      mockPlainToClass.mockReturnValue(mockDto)
+    it('should handle jobId as unknown if missing', async () => {
+      // Arrange
+      const jobDataNoId = { ...mockJobData, jobId: '' }
+      const mockDtoInstance = new MockDto()
+      mockPlainToClass.mockReturnValue(mockDtoInstance)
       mockValidate.mockResolvedValue([])
+      checkRateLimitMock.mockResolvedValue({ allowed: true } as RateLimitResult)
+      mockConfig.customValidator = undefined
 
-      // Mock HMAC to pass
-      const expectedHmac = 'integration-hmac-hash'
-      const mockHmac = {
-        update: jest.fn().mockReturnThis(),
-        digest: jest.fn().mockReturnValue(expectedHmac),
-      }
-      mockCreateHmac.mockReturnValue(mockHmac as any)
-      fullJobData.apiKey = expectedHmac
+      // Act
+      const result = await service.validateRequest(
+        jobDataNoId,
+        MockDto,
+        mockConfig,
+      )
 
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: true,
-      } as any)
-
-      const result = (await service.validateRequest(
-        fullJobData,
-        TestDto,
-        fullConfig,
-      ))
-
-      if (result.valid) {
-        // Should pass all validation steps
-        expect(result.valid).toBe(true)
-
-        // Verify all components were called
-        expect(mockPlainToClass).toHaveBeenCalledWith(TestDto, fullJobData)
-        expect(mockValidate).toHaveBeenCalledWith(mockDto)
-        expect(fullConfig.customValidator).toHaveBeenCalledWith(
-          fullJobData,
-          fullConfig,
-        )
-        expect(mockRateLimitManager.checkRateLimit).toHaveBeenCalledWith(
-          'danbooru',
-          'integration-test-1',
-          'integration-user',
-        )
-        expect(mockLogger.debug).toHaveBeenCalled()
-      } else {
-        fail('Validation should have passed')
-      }
-    })
-
-    it('should short-circuit on first validation failure', async () => {
-      const failingJobData: { [key: string]: string } = {
-        jobId: 'short-circuit-test',
-      }
-
-      mockPlainToClass.mockReturnValue(new TestDto())
-      mockValidate.mockResolvedValue([
-        {
-          property: 'limit',
-          constraints: { isNumber: 'must be number' },
-        } as any,
-      ])
-
-      const result = (await service.validateRequest(failingJobData, TestDto, {
-        apiPrefix: 'danbooru',
-      }))
-
-      if (!result.valid) {
-        expect(result.valid).toBe(false)
-        expect(result.error.code).toBe('INVALID_DTO')
-
-        // Should not call subsequent validations
-        expect(mockRateLimitManager.checkRateLimit).not.toHaveBeenCalled()
-        expect((service as any).validateAuthentication).not.toHaveBeenCalled()
-      } else {
-        fail('Validation should have failed')
-      }
-    })
-  })
-
-  describe('error formatting', () => {
-    it('should create proper ValidationError objects', async () => {
-      const jobData: { [key: string]: string } = { jobId: 'error-test' }
-      const config = { apiPrefix: 'test-api' }
-
-      // Test DTO error
-      mockPlainToClass.mockReturnValue(new TestDto())
-      mockValidate.mockResolvedValue([{ property: 'test' } as any])
-
-      const dtoResult = (await service.validateRequest(
-        jobData,
-        TestDto,
-        config,
-      ))
-      if (!dtoResult.valid) {
-        expect(dtoResult.error).toMatchObject({
-          type: 'error',
-          jobId: 'error-test',
-          code: 'INVALID_DTO',
-          apiPrefix: 'test-api',
-        })
-      }
-
-      // Test rate limit error
-      mockValidate.mockResolvedValue([])
-      mockRateLimitManager.checkRateLimit.mockResolvedValue({
-        allowed: false,
-        error: { error: 'Rate limited' } as any,
-      })
-
-      const rateResult = (await service.validateRequest(
-        jobData,
-        TestDto,
-        config,
-      ))
-      if (!rateResult.valid) {
-        expect(rateResult.error).toMatchObject({
-          type: 'error',
-          jobId: 'error-test',
-          code: 'RATE_LIMIT',
-          apiPrefix: 'test-api',
-          error: 'Rate limited',
-        })
-      }
+      // Assert
+      expect(result.valid).toBe(true)
+      expect((result as { dto: MockDto }).dto).toBe(mockDtoInstance)
+      expect(checkRateLimitMock).toHaveBeenCalledWith(
+        mockConfig.apiPrefix,
+        'unknown',
+        mockJobData.clientId,
+      )
     })
   })
 })

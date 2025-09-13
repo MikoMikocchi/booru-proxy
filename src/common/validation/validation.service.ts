@@ -18,7 +18,7 @@ export interface ApiValidationConfig {
   hmacSecret?: string
   allowedMethods?: string[] // 'hmac' | 'none'
   customValidator?: (
-    data: any,
+    data: unknown,
     config: ApiValidationConfig,
   ) => Promise<ValidationError | null>
 }
@@ -64,7 +64,7 @@ export class ValidationService {
     }
 
     // Step 2: Authentication validation
-    const authError = await this.validateAuthentication(jobData, config)
+    const authError = this.validateAuthentication(jobData, config)
     if (authError) {
       return { valid: false, error: authError }
     }
@@ -119,10 +119,10 @@ export class ValidationService {
     return null
   }
 
-  private async validateAuthentication(
+  private validateAuthentication(
     jobData: { [key: string]: string },
     config: ApiValidationConfig,
-  ): Promise<ValidationError | null> {
+  ): ValidationError | null {
     const { apiPrefix, hmacSecret, allowedMethods = ['hmac'] } = config
     const jobId = jobData.jobId || 'unknown'
     const apiKey = jobData.apiKey
