@@ -1,4 +1,4 @@
-# Danbooru Gateway
+# Booru-proxy
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Node.js](https://img.shields.io/badge/Node.js-v24-green.svg)](https://nodejs.org/) [![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://www.docker.com/) [![Redis](https://img.shields.io/badge/Redis-v7+-orange.svg)](https://redis.io/)
 
@@ -357,7 +357,3 @@ Run `npm run lint` and `npm run test` before submitting. Follow NestJS style; ad
 ## License
 
 MIT License - see [`LICENSE`](LICENSE) for details.
-
-## Contact
-
-Open a GitHub issue for support. Maintainer: [your-contact].
