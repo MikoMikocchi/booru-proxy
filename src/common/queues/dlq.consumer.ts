@@ -1,8 +1,7 @@
 import { Injectable, Logger, Inject, OnModuleInit } from '@nestjs/common'
 import Redis from 'ioredis'
-import * as crypto from 'crypto'
 import { getStreamName, MAX_DLQ_RETRIES } from '../constants'
-import { retryFromDLQ, moveToDeadQueue } from './utils/dlq.util'
+import { moveToDeadQueue } from './utils/dlq.util'
 
 @Injectable()
 export class DlqConsumer implements OnModuleInit {
@@ -12,7 +11,7 @@ export class DlqConsumer implements OnModuleInit {
 
   async onModuleInit() {
     this.logger.log('Starting DLQ stream processor for all APIs')
-    this.startProcessing()
+    await this.startProcessing()
   }
 
   async processDLQ(apiPrefix: string) {
@@ -90,29 +89,7 @@ export class DlqConsumer implements OnModuleInit {
           )
           await this.redis.xdel(dlqStream, streamId)
           continue
-
-          // Original retry logic (commented for privacy):
-          /*
-          const result = await retryFromDLQ(
-            this.redis,
-            apiPrefix,
-            jobId,
-            query, // Would need original query here
-            retryCount,
-            streamId,
-          )
-
-          if (result.success) {
-            this.logger.log(
-              `Successfully retried job ${jobId}, removed from DLQ`,
-            )
-          } else {
-            this.logger.error(`Failed to retry job ${jobId}: ${result.error}`)
-            // Leave in DLQ for manual intervention
-          }
-          */
         } else {
-          // Move to dead queue for permanent failures
           await moveToDeadQueue(
             this.redis,
             apiPrefix,
@@ -129,7 +106,7 @@ export class DlqConsumer implements OnModuleInit {
       }
     } catch (error) {
       this.logger.error(
-        `DLQ processing error for ${apiPrefix}: ${error.message}`,
+        `DLQ processing error for ${apiPrefix}: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
   }
@@ -146,7 +123,9 @@ export class DlqConsumer implements OnModuleInit {
         // Wait before next poll cycle
         await new Promise(resolve => setTimeout(resolve, 2000))
       } catch (error) {
-        this.logger.error(`Error in DLQ processing cycle: ${error.message}`)
+        this.logger.error(
+          `Error in DLQ processing cycle: ${error instanceof Error ? error.message : String(error)}`,
+        )
         await new Promise(resolve => setTimeout(resolve, 5000)) // Longer wait on error
       }
     }

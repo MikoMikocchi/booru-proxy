@@ -2,11 +2,13 @@ import Redis from 'ioredis'
 import {
   DLQ_DEDUP_WINDOW_SECONDS,
   REQUESTS_STREAM,
-  DLQ_STREAM,
   MAX_DLQ_RETRIES,
 } from '../../constants'
 import { encrypt, decrypt } from '../../crypto/crypto.util'
 import * as crypto from 'crypto'
+import { Logger } from '@nestjs/common'
+
+const logger = new Logger('DLQUtil')
 
 /**
  * ENHANCED DEDUPLICATION STRATEGY
@@ -91,9 +93,7 @@ export async function dedupCheck(
   apiName: string,
   plaintextQuery: string,
   jobId: string,
-  encryptionKey?: string,
 ): Promise<boolean> {
-  const encryptionKeyFinal = encryptionKey || process.env.ENCRYPTION_KEY
   const queryHash = crypto
     .createHash('sha256')
     .update(plaintextQuery)
@@ -110,7 +110,7 @@ export async function dedupCheck(
     const jobDedupKey = `dedup:job:${jobId}`
     const jobExists = await redis.exists(jobDedupKey)
     if (jobExists) {
-      console.log(`Cross-job duplicate detected for jobId: ${jobId}`)
+      logger.log(`Cross-job duplicate detected for jobId: ${jobId}`)
       return true
     }
 
@@ -127,7 +127,7 @@ export async function dedupCheck(
     for (const [, fields] of entries) {
       const entryQueryHash = fields.find(f => f[0] === 'queryHash')?.[1]
       if (entryQueryHash === queryHash) {
-        console.log(
+        logger.log(
           `DLQ query hash duplicate found: ${queryHash.slice(0, 16)}... within window`,
         )
         return true // Duplicate query hash found in recent DLQ
@@ -135,9 +135,12 @@ export async function dedupCheck(
     }
 
     return false
-  } catch (error) {
-    console.error(
-      `Enhanced DLQ dedup check failed for job ${jobId}: ${error.message}`,
+  } catch (error: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error'
+    logger.error(
+      `Enhanced DLQ dedup check failed for job ${jobId}: ${errorMessage}`,
+      error instanceof Error ? error.stack : undefined,
     )
     return false // On error, don't skip - better to process than risk missing
   }
@@ -225,9 +228,12 @@ export async function retryFromDLQ(
     let decryptedQuery: string
     try {
       decryptedQuery = decrypt(storedEncryptedQuery, encryptionKeyFinal)
-    } catch (decryptError) {
-      console.error(
-        `Failed to decrypt DLQ entry for job ${jobId}: ${decryptError.message}`,
+    } catch (decryptError: unknown) {
+      const decryptErrorMessage =
+        decryptError instanceof Error ? decryptError.message : 'Unknown error'
+      logger.error(
+        `Failed to decrypt DLQ entry for job ${jobId}: ${decryptErrorMessage}`,
+        decryptError instanceof Error ? decryptError.stack : undefined,
       )
       return { success: false, error: 'Failed to decrypt DLQ entry' }
     }
@@ -238,7 +244,7 @@ export async function retryFromDLQ(
       .update(decryptedQuery)
       .digest('hex')
     if (storedQueryHash !== decryptedHash) {
-      console.error(`Query hash mismatch in DLQ retry for job ${jobId}`)
+      logger.error(`Query hash mismatch in DLQ retry for job ${jobId}`)
       return { success: false, error: 'Query integrity check failed' }
     }
 
@@ -248,10 +254,9 @@ export async function retryFromDLQ(
       entryApiName,
       decryptedQuery,
       jobId,
-      encryptionKeyFinal,
     )
     if (isDuplicate) {
-      console.log(`Skipping retry for duplicate job ${jobId}`)
+      logger.log(`Skipping retry for duplicate job ${jobId}`)
       return { success: false, error: 'Duplicate job detected during retry' }
     }
 
@@ -285,8 +290,12 @@ export async function retryFromDLQ(
     await redis.xdel(dlqStream, streamId)
 
     return { success: true }
-  } catch (err) {
-    console.error(`Retry from DLQ failed for job ${jobId}: ${err.message}`)
-    return { success: false, error: err.message }
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+    logger.error(
+      `Retry from DLQ failed for job ${jobId}: ${errorMessage}`,
+      err instanceof Error ? err.stack : undefined,
+    )
+    return { success: false, error: errorMessage }
   }
 }

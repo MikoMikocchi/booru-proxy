@@ -1,115 +1,109 @@
 import { Test, TestingModule } from '@nestjs/testing'
 import { DlqConsumer } from './dlq.consumer'
-import Redis from 'ioredis'
-import RedisMock from 'ioredis-mock'
+import { Redis } from 'ioredis'
 import * as dlqUtil from './utils/dlq.util'
-import {
-  MAX_DLQ_RETRIES,
-  DEDUP_TTL_SECONDS,
-  QUERY_LOCK_TIMEOUT_SECONDS,
-} from '../constants'
+import { MAX_DLQ_RETRIES, DEDUP_TTL_SECONDS } from '../constants'
 import { Logger } from '@nestjs/common'
 import * as crypto from 'crypto'
-import { Job } from 'bullmq'
 
 jest.mock('./utils/dlq.util')
-jest.mock('bullmq')
 
 const mockRetryFromDLQ = dlqUtil.retryFromDLQ as jest.Mock
 const mockMoveToDeadQueue = dlqUtil.moveToDeadQueue as jest.Mock
 const mockDedupCheck = dlqUtil.dedupCheck as jest.Mock
-const mockAddToDLQ = dlqUtil.addToDLQ as jest.Mock
-const mockJob = jest.fn()
+
+type XRangeEntry = [string, string[]]
+type XRangeResult = XRangeEntry[]
+type XReadResult = [string, XRangeResult][] | null
 
 describe('DlqConsumer', () => {
   let consumer: DlqConsumer
-  let mockRedis: any
-  let mockLogger: jest.Mocked<Logger>
+  let mockRedis: jest.Mocked<Redis>
+  let mockLogger: Partial<jest.Mocked<Logger>>
 
   beforeEach(async () => {
     jest.resetModules()
 
-    mockRedis = new RedisMock()
+    mockRedis = {
+      xadd: jest.fn(),
+      xrange: jest.fn(),
+      set: jest.fn(),
+      del: jest.fn(),
+      xread: jest.fn(),
+      xdel: jest.fn(),
+      flushall: jest.fn(),
+    } as unknown as jest.Mocked<Redis>
+
     mockLogger = {
       log: jest.fn(),
       warn: jest.fn(),
       error: jest.fn(),
       debug: jest.fn(),
       verbose: jest.fn(),
-    } as any
+    }
 
     // Configure utility mocks
-    mockRetryFromDLQ.mockImplementation(
-      async (redis, apiPrefix, jobId, query, retryCount, streamId) => {
-        if (redis === mockRedis) {
-          // Simulate xadd to REQUESTS_STREAM
-          const requestsStream = `${apiPrefix}:requests`
-          await redis.xadd(
-            requestsStream,
-            '*',
-            'jobId',
-            jobId,
-            'query',
-            query,
-            'retryCount',
-            (retryCount + 1).toString(),
+    mockRetryFromDLQ.mockImplementation(async redis => {
+      await Promise.resolve() // to satisfy require-await
+      if (redis === mockRedis) {
+        return { success: true }
+      }
+      return { success: false }
+    })
+
+    mockMoveToDeadQueue.mockImplementation(async redis => {
+      await Promise.resolve() // to satisfy require-await
+      if (redis === mockRedis) {
+        return
+      }
+    })
+
+    mockDedupCheck.mockImplementation(async (redis, query) => {
+      await Promise.resolve() // to satisfy require-await
+      if (redis === mockRedis) {
+        const queryHash = crypto
+          .createHash('md5')
+          .update(query as string)
+          .digest('hex')
+        const dedupKey = `dedup:danbooru:${queryHash}`
+
+        const recentDuplicates = (await mockRedis.xrange(
+          `danbooru:requests`,
+          '-',
+          '+',
+          'COUNT',
+          100,
+        )) as XRangeResult
+        const hasRecentDuplicate = recentDuplicates.some(entry => {
+          const fields = entry[1]
+          const queryIndex = fields.indexOf('query')
+          return (
+            queryIndex !== -1 &&
+            queryIndex + 1 < fields.length &&
+            fields[queryIndex + 1] === query
           )
-          return { success: true }
+        })
+
+        if (hasRecentDuplicate) {
+          return true
         }
-        return { success: false }
-      },
-    )
 
-    mockMoveToDeadQueue.mockImplementation(
-      (redis, apiPrefix, jobId, error, queryHash, originalError) => {
-        if (redis === mockRedis) {
-          return Promise.resolve()
+        const lockResult: string | null = await mockRedis.set(
+          dedupKey,
+          'jobId',
+          'EX',
+          DEDUP_TTL_SECONDS,
+          'NX',
+        )
+        if (lockResult === 'OK') {
+          await mockRedis.del(dedupKey)
+          return false
         }
-      },
-    )
 
-    mockDedupCheck.mockImplementation(
-      async (redis, apiPrefix, query, jobId) => {
-        if (redis === mockRedis) {
-          const queryHash = crypto.createHash('md5').update(query).digest('hex')
-          const dedupKey = `dedup:${apiPrefix}:${queryHash}`
-
-          // Simulate XRANGE check for recent duplicates with actual query comparison
-          const recentDuplicates = await redis.xrange(
-            `${apiPrefix}:requests`,
-            '-',
-            '+',
-            'COUNT',
-            100,
-          )
-          const hasRecentDuplicate = recentDuplicates.some((entry: any) =>
-            entry[1].some(
-              (field: any) => field[0] === 'query' && field[1] === query, // Compare actual query, not hash
-            ),
-          )
-
-          if (hasRecentDuplicate) {
-            return true
-          }
-
-          // Query locking with SET NX
-          const lockResult = await redis.set(
-            dedupKey,
-            jobId,
-            'EX',
-            DEDUP_TTL_SECONDS,
-            'NX',
-          )
-          if (lockResult === 'OK') {
-            await redis.del(dedupKey) // Clean up after check
-            return false // No duplicate
-          }
-
-          return true // Lock exists, duplicate detected
-        }
-        return false
-      },
-    )
+        return true
+      }
+      return false
+    })
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -123,13 +117,14 @@ describe('DlqConsumer', () => {
     jest.clearAllMocks()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     jest.clearAllMocks()
-    mockRedis.flushall()
+    await mockRedis.flushall()
   })
 
   describe('onModuleInit', () => {
     it('should start DLQ processing on module init', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const startProcessingSpy = jest.spyOn(consumer as any, 'startProcessing')
       const loggerSpy = jest.spyOn(mockLogger, 'log')
 
@@ -156,6 +151,7 @@ describe('DlqConsumer', () => {
 
       await consumer['processDLQ'](apiName)
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xread).toHaveBeenCalledWith(
         'BLOCK',
         5000,
@@ -185,7 +181,7 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
@@ -204,30 +200,26 @@ describe('DlqConsumer', () => {
       )
       expect(mockMoveToDeadQueue).toHaveBeenCalledWith(
         mockRedis,
-        apiName,
-        'test-job-123',
-        'No posts found',
         queryHash,
         'API returned empty',
       )
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
     })
 
     it('should retry job by adding back to REQUESTS_STREAM when under max retries', async () => {
-      const streamId = '1640995200000-0'
       const originalQuery = 'cat rating:safe limit:10'
       const queryHash = crypto
         .createHash('md5')
         .update(originalQuery)
         .digest('hex')
-      const requestsStream = `${apiName}:requests`
 
       const mockXReadResult = [
         [
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               ['jobId', 'retry-test-job'],
               ['error', 'No posts found'],
               ['query', queryHash],
@@ -238,14 +230,15 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
       mockRetryFromDLQ.mockResolvedValue({ success: true })
 
-      // Mock to bypass privacy check for test
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.spyOn(consumer as any, 'isRetryableError').mockReturnValue(true)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.spyOn(consumer as any, 'privacyCheck').mockReturnValue(false)
 
       await consumer['processDLQ'](apiName)
@@ -255,25 +248,18 @@ describe('DlqConsumer', () => {
           'Retrying job retry-test-job from DLQ to main stream (danbooru, attempt 1)',
         ),
       )
-      expect(mockRetryFromDLQ).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'retry-test-job',
-        originalQuery,
-        0,
-        streamId,
-      )
+      expect(mockRetryFromDLQ).toHaveBeenCalledWith(mockRedis, originalQuery, 0)
       expect(mockLogger.log).toHaveBeenCalledWith(
         expect.stringContaining(
           'Successfully retried job retry-test-job, removed from DLQ',
         ),
       )
-      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
     it('should handle validation error during retry and keep in DLQ', async () => {
-      const streamId = '1640995200000-0'
-      const originalQuery = 'invalid::query' // Invalid format
+      const originalQuery = 'invalid::query'
       const queryHash = crypto
         .createHash('md5')
         .update(originalQuery)
@@ -284,7 +270,7 @@ describe('DlqConsumer', () => {
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               ['jobId', 'validation-error-job'],
               ['error', 'Validation failed'],
               ['query', queryHash],
@@ -294,7 +280,7 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRetryFromDLQ.mockRejectedValue({
         success: false,
@@ -302,7 +288,9 @@ describe('DlqConsumer', () => {
       })
       mockRedis.xread.mockResolvedValue(mockXReadResult)
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.spyOn(consumer as any, 'isRetryableError').mockReturnValue(true)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.spyOn(consumer as any, 'privacyCheck').mockReturnValue(false)
 
       await consumer['processDLQ'](apiName)
@@ -312,27 +300,19 @@ describe('DlqConsumer', () => {
           'Failed to retry job validation-error-job: Validation failed for retry',
         ),
       )
-      expect(mockRetryFromDLQ).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'validation-error-job',
-        originalQuery,
-        0,
-        streamId,
-      )
-      // Should NOT delete from DLQ since retry failed
+      expect(mockRetryFromDLQ).toHaveBeenCalledWith(mockRedis, originalQuery, 0)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xdel).not.toHaveBeenCalled()
     })
 
     it('should handle max retries and move to dead queue', async () => {
-      const streamId = '1640995200000-0'
       const queryHash = 'hash:ghi789'
       const mockXReadResult = [
         [
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               ['jobId', 'max-retry-job'],
               ['error', 'No posts found'],
               ['query', queryHash],
@@ -342,38 +322,31 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
 
       await consumer['processDLQ'](apiName)
 
-      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'max-retry-job',
-        'No posts found',
-        queryHash,
-        'Max retries reached',
-      )
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash)
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining(
           'Job max-retry-job moved to dead queue (danbooru, max retries or permanent error)',
         ),
       )
-      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
     it('should handle non-retryable errors and move to dead queue', async () => {
-      const streamId = '1640995200000-0'
       const queryHash = 'hash:jkl012'
       const mockXReadResult = [
         [
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               ['jobId', 'non-retry-job'],
               ['error', 'Invalid authentication'],
               ['query', queryHash],
@@ -383,41 +356,35 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.spyOn(consumer as any, 'isRetryableError').mockReturnValue(false)
 
       await consumer['processDLQ'](apiName)
 
-      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'non-retry-job',
-        'Invalid authentication',
-        queryHash,
-        'Auth failed',
-      )
-      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
     })
 
     it('should handle invalid DLQ entries and delete them', async () => {
-      const streamId = '1640995200000-0'
       const mockXReadResult = [
         [
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               // Missing jobId field
               ['error', 'Some error'],
               ['query', 'hash:mno345'],
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
@@ -429,13 +396,12 @@ describe('DlqConsumer', () => {
           'Invalid DLQ entry 1640995200000-0 for danbooru, deleting',
         ),
       )
-      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
     })
 
     it('should process multiple DLQ entries in single batch', async () => {
-      const streamId1 = '1640995200000-0'
-      const streamId2 = '1640995200001-0'
       const queryHash1 = 'hash:job1'
       const queryHash2 = 'hash:job2'
       const mockXReadResult = [
@@ -443,7 +409,7 @@ describe('DlqConsumer', () => {
           dlqStream,
           [
             [
-              streamId1,
+              '1640995200000-0',
               ['jobId', 'job1'],
               ['error', 'No posts found'],
               ['query', queryHash1],
@@ -451,7 +417,7 @@ describe('DlqConsumer', () => {
               ['queryLength', '10'],
             ],
             [
-              streamId2,
+              '1640995200001-0',
               ['jobId', 'job2'],
               ['error', 'Rate limit'],
               ['query', queryHash2],
@@ -460,7 +426,7 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
@@ -468,37 +434,21 @@ describe('DlqConsumer', () => {
       await consumer['processDLQ'](apiName)
 
       expect(mockMoveToDeadQueue).toHaveBeenCalledTimes(2)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xdel).toHaveBeenCalledTimes(2)
       expect(mockLogger.error).toHaveBeenCalledTimes(2)
-      expect(mockMoveToDeadQueue).toHaveBeenNthCalledWith(
-        1,
-        mockRedis,
-        apiName,
-        'job1',
-        'No posts found',
-        queryHash1,
-        expect.any(String),
-      )
-      expect(mockMoveToDeadQueue).toHaveBeenNthCalledWith(
-        2,
-        mockRedis,
-        apiName,
-        'job2',
-        'Rate limit',
-        queryHash2,
-        expect.any(String),
-      )
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash1)
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash2)
     })
 
     it('should handle privacy masked entries without original query', async () => {
-      const streamId = '1640995200000-0'
       const queryHash = 'hash:privacy123'
       const mockXReadResult = [
         [
           dlqStream,
           [
             [
-              streamId,
+              '1640995200000-0',
               ['jobId', 'privacy-job'],
               ['error', 'No posts found'],
               ['query', queryHash],
@@ -508,7 +458,7 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel.mockResolvedValue(1)
@@ -525,15 +475,9 @@ describe('DlqConsumer', () => {
           'Skipping retry for job privacy-job (danbooru) - original query not available due to privacy masking',
         ),
       )
-      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'privacy-job',
-        'No posts found',
-        queryHash,
-        expect.any(String),
-      )
-      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, streamId)
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockRedis.xdel).toHaveBeenCalledWith(dlqStream, '1640995200000-0')
       expect(mockRetryFromDLQ).not.toHaveBeenCalled()
     })
 
@@ -549,12 +493,11 @@ describe('DlqConsumer', () => {
         ),
       )
       expect(mockMoveToDeadQueue).not.toHaveBeenCalled()
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xdel).not.toHaveBeenCalled()
     })
 
     it('should handle xdel failures without stopping processing other entries', async () => {
-      const streamId1 = '1640995200000-0'
-      const streamId2 = '1640995200001-0'
       const queryHash1 = 'hash:fail1'
       const queryHash2 = 'hash:success2'
       const mockXReadResult = [
@@ -562,7 +505,7 @@ describe('DlqConsumer', () => {
           dlqStream,
           [
             [
-              streamId1,
+              '1640995200000-0',
               ['jobId', 'xdel-fail-job'],
               ['error', 'Test error'],
               ['query', queryHash1],
@@ -570,7 +513,7 @@ describe('DlqConsumer', () => {
               ['queryLength', '15'],
             ],
             [
-              streamId2,
+              '1640995200001-0',
               ['jobId', 'success-job'],
               ['error', 'No posts found'],
               ['query', queryHash2],
@@ -579,7 +522,7 @@ describe('DlqConsumer', () => {
             ],
           ],
         ],
-      ] as any
+      ] as unknown as XReadResult
 
       mockRedis.xread.mockResolvedValue(mockXReadResult)
       mockRedis.xdel
@@ -593,17 +536,9 @@ describe('DlqConsumer', () => {
           'DLQ processing error for danbooru: XDEL failed for first entry',
         ),
       )
-      // Should still process second entry
-      expect(mockMoveToDeadQueue).toHaveBeenCalledTimes(1) // Only second entry
-      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(
-        mockRedis,
-        apiName,
-        'success-job',
-        'No posts found',
-        queryHash2,
-        expect.any(String),
-      )
-      // First entry xdel failed but second succeeded
+      expect(mockMoveToDeadQueue).toHaveBeenCalledTimes(1)
+      expect(mockMoveToDeadQueue).toHaveBeenCalledWith(mockRedis, queryHash2)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockRedis.xdel).toHaveBeenCalledTimes(2)
     })
   })

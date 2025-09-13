@@ -1,9 +1,13 @@
-import { Module, Global } from '@nestjs/common'
+import { Module, Global, Logger } from '@nestjs/common'
 import { BullModule } from '@nestjs/bullmq'
 import { RedisModule } from '../redis/redis.module'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { RedisStreamConsumer } from './redis-stream.consumer'
 import { DlqConsumer } from './dlq.consumer'
+import * as fs from 'fs'
+import type { TlsOptions } from 'tls'
+
+const logger = new Logger('QueuesModule')
 
 @Global()
 @Module({
@@ -12,7 +16,7 @@ import { DlqConsumer } from './dlq.consumer'
     ConfigModule,
     BullModule.forRootAsync({
       imports: [ConfigModule, RedisModule],
-      useFactory: async (configService: ConfigService) => {
+      useFactory: (configService: ConfigService) => {
         let redisUrl =
           configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
         const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
@@ -27,14 +31,13 @@ import { DlqConsumer } from './dlq.consumer'
           redisUrl = `redis://${url.username || ''}:${password}@${url.host}`
         }
 
-        let tlsConfig: any = undefined
+        let tlsConfig: TlsOptions | undefined = undefined
         if (useTls) {
           const caPath = configService.get<string>('REDIS_TLS_CA')
           const certPath = configService.get<string>('REDIS_TLS_CERT')
           const keyPath = configService.get<string>('REDIS_TLS_KEY')
 
           if (caPath && certPath && keyPath) {
-            const fs = require('fs')
             try {
               const caContent = fs.readFileSync(caPath, 'utf8')
               const certContent = fs.readFileSync(certPath, 'utf8')
@@ -51,26 +54,27 @@ import { DlqConsumer } from './dlq.consumer'
               }
 
               tlsConfig = {
-                ca: [caContent],
-                cert: [certContent],
-                key: keyContent,
+                ca: [Buffer.from(caContent, 'utf8')],
+                cert: [Buffer.from(certContent, 'utf8')],
+                key: Buffer.from(keyContent, 'utf8'),
                 rejectUnauthorized: process.env.NODE_ENV !== 'development',
-                checkServerIdentity: () => undefined,
               }
-            } catch (error) {
-              console.warn(
-                'Failed to load TLS certificates for BullMQ:',
-                error.message,
+            } catch (error: unknown) {
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : 'Unknown error loading TLS certificates'
+              logger.warn(
+                `Failed to load TLS certificates for BullMQ: ${errorMessage}`,
+                error instanceof Error ? error.stack : undefined,
               )
               tlsConfig = {
                 rejectUnauthorized: false,
-                checkServerIdentity: () => undefined,
               }
             }
           } else {
             tlsConfig = {
               rejectUnauthorized: false,
-              checkServerIdentity: () => undefined,
             }
           }
         }
@@ -108,10 +112,10 @@ import { DlqConsumer } from './dlq.consumer'
             if (
               tlsErrors.some(error => errorMsg.includes(error.toUpperCase()))
             ) {
-              return 2.0 as any
+              return 2.0
             }
 
-            return 2.0 as any
+            return 2.0
           },
           lazyConnect: true,
           maxRetriesPerRequest: null,

@@ -4,7 +4,7 @@ export interface QueueConfig {
   concurrency?: number
   removeOnComplete?: boolean
   removeOnFail?: boolean
-  defaultJobOptions?: any
+  defaultJobOptions?: Record<string, unknown>
 }
 
 export interface IQueueProvider {
