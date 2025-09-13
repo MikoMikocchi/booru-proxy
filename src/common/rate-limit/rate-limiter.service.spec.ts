@@ -4,29 +4,49 @@ import { ConfigService } from '@nestjs/config'
 import { Logger } from '@nestjs/common'
 
 interface MockPipeline {
-  _commands: any[]
-  eval: jest.Mock<any, any>
-  exec: jest.Mock<Promise<any[]>>
+  _commands: Array<{ script: string; keys: number; args: unknown[] }>
+  eval: jest.Mock<MockPipeline, [string, number, ...unknown[]]>
+  exec: jest.Mock<Promise<[null, number][]>>
+}
+
+interface RedisMethods {
+  eval: jest.Mock<
+    Promise<number>,
+    [string, number, string, number, number, number]
+  >
+  get: jest.Mock<Promise<string | null>, [string]>
+  ttl: jest.Mock<Promise<number>, [string]>
+  del: jest.Mock<Promise<number>, [string]>
+  pipeline: jest.Mock<MockPipeline>
 }
 
 describe('RateLimiterService', () => {
   let service: RateLimiterService
-  let mockRedis: any
+  let mockRedis: jest.Mocked<RedisMethods>
   let configService: jest.Mocked<ConfigService>
-  let mockLogger: jest.Mocked<Logger>
+  let mockLog: jest.SpyInstance
+  let mockWarn: jest.SpyInstance
+
+  beforeAll(() => {
+    mockLog = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {})
+    mockWarn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {})
+  })
 
   beforeEach(async () => {
+    const commands: Array<{ script: string; keys: number; args: unknown[] }> =
+      []
     const mockPipeline: MockPipeline = {
-      _commands: [] as any[],
+      _commands: commands,
       eval: jest.fn(
-        (script: string, keys: number, ...args: any[]): MockPipeline => {
-          mockPipeline._commands.push({ script, keys, args })
+        (script: string, keys: number, ...args: unknown[]): MockPipeline => {
+          commands.push({ script, keys, args })
           return mockPipeline
         },
       ),
-      exec: jest.fn(async (): Promise<any[]> => {
-        return mockPipeline._commands.map((cmd: any) => [null, 1])
-      }),
+      exec: jest.fn(
+        (): Promise<[null, number][]> =>
+          Promise.resolve(commands.map(() => [null, 1] as [null, number])),
+      ),
     }
 
     mockRedis = {
@@ -35,18 +55,11 @@ describe('RateLimiterService', () => {
       ttl: jest.fn(),
       del: jest.fn(),
       pipeline: jest.fn(() => mockPipeline),
-    }
+    } as jest.Mocked<RedisMethods>
 
     configService = {
       get: jest.fn().mockReturnValue(60), // Default DANBOORU_RATE_LIMIT
-    } as any
-
-    mockLogger = {
-      log: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    } as any
+    } as unknown as jest.Mocked<ConfigService>
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -70,40 +83,38 @@ describe('RateLimiterService', () => {
   })
 
   describe('checkRateLimit', () => {
-    const luaScript = expect.stringContaining('local key = KEYS[1]')
-
     it('should allow request when under limit', async () => {
-      mockRedis.eval.mockResolvedValueOnce(1) // Allowed
+      mockRedis.eval.mockResolvedValueOnce(1)
 
       const result = await service.checkRateLimit('user123', 'danbooru', 5, 60)
 
       expect(result).toBe(true)
       expect(mockRedis.eval).toHaveBeenCalledWith(
-        luaScript,
+        expect.stringContaining('local key = KEYS[1]'),
         1,
         'rate:danbooru:user123',
         5,
         60,
         expect.any(Number),
       )
-      expect(mockLogger.warn).not.toHaveBeenCalled()
+      expect(mockWarn).not.toHaveBeenCalled()
     })
 
     it('should block request when over limit', async () => {
-      mockRedis.eval.mockResolvedValueOnce(0) // Blocked
+      mockRedis.eval.mockResolvedValueOnce(0)
 
       const result = await service.checkRateLimit('user123', 'danbooru', 5, 60)
 
       expect(result).toBe(false)
       expect(mockRedis.eval).toHaveBeenCalledWith(
-        luaScript,
+        expect.stringContaining('local key = KEYS[1]'),
         1,
         'rate:danbooru:user123',
         5,
         60,
         expect.any(Number),
       )
-      expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect(mockWarn).toHaveBeenCalledWith(
         expect.stringContaining(
           'Rate limit exceeded for danbooru key rate:danbooru:user123',
         ),
@@ -120,7 +131,7 @@ describe('RateLimiterService', () => {
 
       expect(mockRedis.eval).toHaveBeenCalledTimes(2)
       expect(mockRedis.eval).toHaveBeenLastCalledWith(
-        luaScript,
+        expect.stringContaining('local key = KEYS[1]'),
         1,
         'rate:danbooru:user123',
         5,
@@ -135,7 +146,7 @@ describe('RateLimiterService', () => {
       await service.checkRateLimit('192.168.1.1', 'danbooru', 10, 3600)
 
       expect(mockRedis.eval).toHaveBeenCalledWith(
-        luaScript,
+        expect.stringContaining('local key = KEYS[1]'),
         1,
         'rate:danbooru:192.168.1.1',
         10,
@@ -150,7 +161,7 @@ describe('RateLimiterService', () => {
       await service.checkRateLimit('user123', 'Danbooru', 5, 60)
 
       expect(mockRedis.eval).toHaveBeenCalledWith(
-        luaScript,
+        expect.stringContaining('local key = KEYS[1]'),
         1,
         'rate:danbooru:user123',
         5,
@@ -223,29 +234,36 @@ describe('RateLimiterService', () => {
   })
 
   describe('checkCompositeRateLimit', () => {
+    let testPipeline: MockPipeline
+
     beforeEach(() => {
       // Configure pipeline for this test
-      const testPipeline: MockPipeline = {
-        _commands: [] as any[],
+      const commands: Array<{ script: string; keys: number; args: unknown[] }> =
+        []
+      const mockPipeline: MockPipeline = {
+        _commands: commands,
         eval: jest.fn(
-          (script: string, keys: number, ...args: any[]): MockPipeline => {
-            testPipeline._commands.push({ script, keys, args })
-            return testPipeline
+          (script: string, keys: number, ...args: unknown[]): MockPipeline => {
+            commands.push({ script, keys, args })
+            return mockPipeline
           },
         ),
-        exec: jest.fn(async (): Promise<any[]> => {
-          return testPipeline._commands.map((cmd: any) => [null, 1])
-        }),
+        exec: jest.fn(
+          (): Promise<[null, number][]> =>
+            Promise.resolve(commands.map(() => [null, 1] as [null, number])),
+        ),
       }
+      testPipeline = mockPipeline
       mockRedis.pipeline.mockReturnValue(testPipeline)
     })
 
     it('should allow when all individual limits are under threshold', async () => {
-      const testPipeline = mockRedis.pipeline() as MockPipeline
-      testPipeline.exec.mockResolvedValue([
-        [null, 1],
-        [null, 1],
-      ])
+      testPipeline.exec.mockImplementationOnce(() =>
+        Promise.resolve([
+          [null, 1],
+          [null, 1],
+        ]),
+      )
 
       const result = await service.checkCompositeRateLimit(
         'danbooru',
@@ -256,15 +274,16 @@ describe('RateLimiterService', () => {
 
       expect(result).toBe(true)
       expect(mockRedis.pipeline).toHaveBeenCalledTimes(1)
-      expect(mockLogger.warn).not.toHaveBeenCalled()
+      expect(mockWarn).not.toHaveBeenCalled()
     })
 
     it('should block when any individual limit is exceeded', async () => {
-      const testPipeline = mockRedis.pipeline() as MockPipeline
-      testPipeline.exec.mockResolvedValue([
-        [null, 1], // First allowed
-        [null, 0], // Second blocked
-      ])
+      testPipeline.exec.mockImplementationOnce(() =>
+        Promise.resolve([
+          [null, 1], // First allowed
+          [null, 0], // Second blocked
+        ]),
+      )
 
       const result = await service.checkCompositeRateLimit(
         'danbooru',
@@ -274,18 +293,19 @@ describe('RateLimiterService', () => {
       )
 
       expect(result).toBe(false)
-      expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect(mockWarn).toHaveBeenCalledWith(
         expect.stringContaining('Composite rate limit exceeded for danbooru'),
       )
     })
 
     it('should call eval for each identifier in pipeline', async () => {
-      const testPipeline = mockRedis.pipeline() as MockPipeline
-      testPipeline.exec.mockResolvedValue([
-        [null, 1],
-        [null, 1],
-        [null, 1],
-      ])
+      testPipeline.exec.mockImplementationOnce(() =>
+        Promise.resolve([
+          [null, 1],
+          [null, 1],
+          [null, 1],
+        ]),
+      )
 
       await service.checkCompositeRateLimit(
         'danbooru',
@@ -333,12 +353,10 @@ describe('RateLimiterService', () => {
 
       const result = await service.getRateLimitStats('danbooru', 'user123')
 
-      expect(result).toEqual({
-        current: 3,
-        limit: 10,
-        remaining: 7,
-        resetTime: expect.any(Number),
-      })
+      expect(result.current).toBe(3)
+      expect(result.limit).toBe(10)
+      expect(result.remaining).toBe(7)
+      expect(result.resetTime).toBeGreaterThan(0)
       expect(mockRedis.get).toHaveBeenCalledWith('rate:danbooru:user123')
       expect(mockRedis.ttl).toHaveBeenCalledWith('rate:danbooru:user123')
     })
@@ -350,12 +368,10 @@ describe('RateLimiterService', () => {
 
       const result = await service.getRateLimitStats('danbooru')
 
-      expect(result).toEqual({
-        current: 0,
-        limit: 60,
-        remaining: 60,
-        resetTime: expect.any(Number),
-      })
+      expect(result.current).toBe(0)
+      expect(result.limit).toBe(60)
+      expect(result.remaining).toBe(60)
+      expect(result.resetTime).toBeGreaterThan(0)
       expect(mockRedis.get).toHaveBeenCalledWith('rate:danbooru:global')
       expect(mockRedis.ttl).toHaveBeenCalledWith('rate:danbooru:global')
     })
@@ -367,12 +383,10 @@ describe('RateLimiterService', () => {
 
       const result = await service.getRateLimitStats('danbooru', 'newuser')
 
-      expect(result).toEqual({
-        current: 0,
-        limit: 100,
-        remaining: 100,
-        resetTime: expect.any(Number),
-      })
+      expect(result.current).toBe(0)
+      expect(result.limit).toBe(100)
+      expect(result.remaining).toBe(100)
+      expect(result.resetTime).toBeGreaterThan(0)
     })
 
     it('should use config limit or default 60', async () => {
@@ -393,7 +407,7 @@ describe('RateLimiterService', () => {
       await service.resetRateLimit('danbooru', 'user123')
 
       expect(mockRedis.del).toHaveBeenCalledWith('rate:danbooru:user123')
-      expect(mockLogger.log).toHaveBeenCalledWith(
+      expect(mockLog).toHaveBeenCalledWith(
         'Reset rate limit for danbooru user123',
       )
     })
@@ -404,7 +418,7 @@ describe('RateLimiterService', () => {
       await service.resetRateLimit('danbooru')
 
       expect(mockRedis.del).toHaveBeenCalledWith('rate:danbooru:global')
-      expect(mockLogger.log).toHaveBeenCalledWith(
+      expect(mockLog).toHaveBeenCalledWith(
         'Reset rate limit for danbooru global',
       )
     })
@@ -415,7 +429,7 @@ describe('RateLimiterService', () => {
       await expect(
         service.resetRateLimit('danbooru', 'nonexistent'),
       ).resolves.toBeUndefined()
-      expect(mockLogger.log).toHaveBeenCalledWith(
+      expect(mockLog).toHaveBeenCalledWith(
         'Reset rate limit for danbooru nonexistent',
       )
     })
@@ -423,22 +437,42 @@ describe('RateLimiterService', () => {
 
   describe('getWindowSeconds', () => {
     it('should return 60 for minute window', () => {
-      const result = (service as any).getWindowSeconds('minute')
+      const getWindowSeconds = (
+        service as unknown as {
+          getWindowSeconds: (windowType: string) => number
+        }
+      ).getWindowSeconds
+      const result = getWindowSeconds('minute')
       expect(result).toBe(60)
     })
 
     it('should return 3600 for hour window', () => {
-      const result = (service as any).getWindowSeconds('hour')
+      const getWindowSeconds = (
+        service as unknown as {
+          getWindowSeconds: (windowType: string) => number
+        }
+      ).getWindowSeconds
+      const result = getWindowSeconds('hour')
       expect(result).toBe(3600)
     })
 
     it('should return 86400 for day window', () => {
-      const result = (service as any).getWindowSeconds('day')
+      const getWindowSeconds = (
+        service as unknown as {
+          getWindowSeconds: (windowType: string) => number
+        }
+      ).getWindowSeconds
+      const result = getWindowSeconds('day')
       expect(result).toBe(86400)
     })
 
     it('should default to 60 for unknown window type', () => {
-      const result = (service as any).getWindowSeconds('invalid' as any)
+      const getWindowSeconds = (
+        service as unknown as {
+          getWindowSeconds: (windowType: string) => number
+        }
+      ).getWindowSeconds
+      const result = getWindowSeconds('invalid')
       expect(result).toBe(60)
     })
   })
@@ -450,7 +484,7 @@ describe('RateLimiterService', () => {
       const result = await service.checkRateLimit('user123', 'danbooru', 5, 60)
 
       expect(result).toBe(true)
-      expect(mockLogger.warn).not.toHaveBeenCalled()
+      expect(mockWarn).not.toHaveBeenCalled()
     })
 
     it('should block immediately after limit', async () => {
@@ -462,7 +496,7 @@ describe('RateLimiterService', () => {
       const result = await service.checkRateLimit('user123', 'danbooru', 5, 60)
 
       expect(result).toBe(false)
-      expect(mockLogger.warn).toHaveBeenCalledTimes(1)
+      expect(mockWarn).toHaveBeenCalledTimes(1)
     })
 
     it('should handle large limits correctly', async () => {
@@ -509,8 +543,8 @@ describe('RateLimiterService', () => {
 
     it('should handle pipeline execution error', async () => {
       const error = new Error('Pipeline failed')
-      const testPipeline = mockRedis.pipeline() as MockPipeline
-      testPipeline.exec = jest.fn().mockRejectedValue(error)
+      const testPipeline = mockRedis.pipeline()
+      testPipeline.exec.mockRejectedValueOnce(error)
 
       await expect(
         service.checkCompositeRateLimit('danbooru', ['ip1', 'ip2'], 5, 60),

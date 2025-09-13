@@ -1,20 +1,16 @@
-import {
-  Injectable,
-  ExecutionContext,
-  UnauthorizedException,
-} from '@nestjs/common'
+import { Injectable, ExecutionContext } from '@nestjs/common'
 import { ThrottlerGuard } from '@nestjs/throttler'
 import { Request } from 'express'
 
 @Injectable()
 export class ApiThrottlerGuard extends ThrottlerGuard {
-  protected async getTracker(req: Request): Promise<string> {
+  protected getTracker(req: Request): Promise<string> {
     // Extract apiPrefix from path or headers
     const apiPrefix = this.extractApiPrefix(req)
     const ip = this.extractIp(req)
     const clientId = (req.headers['x-client-id'] as string) || 'anonymous'
 
-    return `${apiPrefix}:${ip}:${clientId}`
+    return Promise.resolve(`${apiPrefix}:${ip}:${clientId}`)
   }
 
   protected extractApiPrefix(req: Request): string {
@@ -22,8 +18,8 @@ export class ApiThrottlerGuard extends ThrottlerGuard {
     // Examples: /api/danbooru/posts -> 'danbooru'
     //          /api/gelbooru/tags -> 'gelbooru'
     const path = req.path
-    const match = path.match(/^\/api\/([^\/]+)\//)
-    return match ? match[1] : 'default'
+    const match = path.match(/^\/api\/([^/]+)\//)
+    return match?.[1] ?? 'default'
   }
 
   protected extractIp(req: Request): string {

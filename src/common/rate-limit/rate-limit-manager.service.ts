@@ -128,10 +128,6 @@ export class RateLimitManagerService {
     resetTime: number
     windowType: string
   }> {
-    const windowSeconds = this.getWindowSeconds(windowType)
-    const rateLimitKey = `${apiPrefix.toUpperCase()}_RATE_LIMIT_PER_${windowType.toUpperCase()}`
-    const limit = this.configService.get<number>(rateLimitKey) || 60
-
     const stats = await this.rateLimiterService.getRateLimitStats(
       apiPrefix,
       clientId,

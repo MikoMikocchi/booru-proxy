@@ -11,7 +11,7 @@ import { ApiThrottlerGuard } from './throttler.guard'
     ConfigModule,
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
+      useFactory: (configService: ConfigService) => ({
         throttlers: [
           {
             ttl: configService.get('THROTTLE_TTL') || 60,

@@ -2,11 +2,6 @@ import { Injectable, Inject, Logger } from '@nestjs/common'
 import Redis from 'ioredis'
 import { ConfigService } from '@nestjs/config'
 
-interface RateLimitConfig {
-  limit: number
-  windowSeconds: number
-}
-
 @Injectable()
 export class RateLimiterService {
   private readonly logger = new Logger(RateLimiterService.name)

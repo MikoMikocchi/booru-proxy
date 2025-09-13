@@ -1,334 +1,195 @@
 import { Test, TestingModule } from '@nestjs/testing'
-import { ApiThrottlerGuard } from './throttler.guard'
-import { RateLimitManagerService } from './rate-limit-manager.service'
-import { ConfigService } from '@nestjs/config'
-import { ExecutionContext, UnauthorizedException } from '@nestjs/common'
-import { Request, Response, NextFunction } from 'express'
+import { ExecutionContext } from '@nestjs/common'
+import {
+  ThrottlerGuard,
+  ThrottlerModule,
+} from '@nestjs/throttler'
+import { Reflector } from '@nestjs/core'
+import type { Request, Response } from 'express'
+import type { Socket } from 'net'
 
-import type { RateLimitResult } from './rate-limit-manager.service'
+import { ApiThrottlerGuard } from './throttler.guard'
+
+class TestApiThrottlerGuard extends ApiThrottlerGuard {
+  public testExtractApiPrefix(req: Request): string {
+    return this.extractApiPrefix(req)
+  }
+
+  public testExtractIp(req: Request): string {
+    return this.extractIp(req)
+  }
+
+  public async testGetTracker(req: Request): Promise<string> {
+    return this.getTracker(req)
+  }
+}
 
 describe('ApiThrottlerGuard', () => {
-  let guard: ApiThrottlerGuard
-  let mockRateLimitManager: jest.Mocked<RateLimitManagerService>
-  let mockConfigService: jest.Mocked<ConfigService>
-  let mockExecutionContext: jest.Mocked<ExecutionContext>
-  let mockRequest: Partial<Request>
-  let mockResponse: Partial<Response>
-  let mockNext: jest.Mock
+  let guard: TestApiThrottlerGuard
+  let mockContext: Partial<ExecutionContext>
 
   beforeEach(async () => {
-    mockRateLimitManager = {
-      checkCompositeRateLimit: jest.fn(),
-      getRateLimitStatus: jest.fn(),
-    } as any
-
-    mockConfigService = {
-      get: jest.fn().mockReturnValue('danbooru'),
-    } as any
-
-    mockRequest = {
-      headers: { 'x-client-id': 'user123' },
-      body: {},
-    } as Partial<Request>
-    Object.defineProperty(mockRequest, 'ip', {
-      value: '192.168.1.1',
-      writable: true,
-      configurable: true,
-    })
-
-    mockResponse = {}
-    mockNext = jest.fn()
-
-    const mockContext = {
-      switchToHttp: () => ({
-        getRequest: () => mockRequest as Request,
-        getResponse: () => mockResponse as Response,
-        getNext: () => mockNext,
-      }),
-      getHandler: () => ({}),
-      getClass: () => ({}),
-    }
-
-    mockExecutionContext = {
-      getArgByIndex: () => mockContext,
-    } as any
-
     const module: TestingModule = await Test.createTestingModule({
+      imports: [
+        ThrottlerModule.forRoot({
+          throttlers: [{ ttl: 60, limit: 10 }],
+        }),
+      ],
       providers: [
-        ApiThrottlerGuard,
-        { provide: RateLimitManagerService, useValue: mockRateLimitManager },
-        { provide: ConfigService, useValue: mockConfigService },
+        Reflector,
+        TestApiThrottlerGuard,
       ],
     }).compile()
 
-    guard = module.get<ApiThrottlerGuard>(ApiThrottlerGuard)
+    guard = module.get<TestApiThrottlerGuard>(TestApiThrottlerGuard)
   })
 
   afterEach(() => {
     jest.clearAllMocks()
   })
 
-  describe('canActivate', () => {
-    it('should allow request when all rate limits pass', async () => {
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 1,
-        limit: 10,
-        remaining: 9,
-        resetTime: Date.now() + 60000,
-        apiPrefix: 'danbooru',
-        windowType: 'minute',
-      } as RateLimitResult)
+  describe('extractApiPrefix', () => {
+    it('should extract "danbooru" from /api/danbooru/posts', () => {
+      const mockRequest = {
+        path: '/api/danbooru/posts',
+      } as unknown as Request
 
-      const result = await guard.canActivate(
-        mockExecutionContext as ExecutionContext,
-      )
-
-      expect(result).toBe(true)
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['ip:192.168.1.1', 'user:user123'],
-        expect.any(Number),
-        expect.any(Number),
-      )
-      expect(mockNext).toHaveBeenCalled()
+      const result = guard.testExtractApiPrefix(mockRequest)
+      expect(result).toBe('danbooru')
     })
 
-    it('should block request when IP limit exceeded', async () => {
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: false,
-        error: { message: 'Rate limit exceeded' } as any,
-      } as RateLimitResult)
+    it('should extract "gelbooru" from /api/gelbooru/tags', () => {
+      const mockRequest = {
+        path: '/api/gelbooru/tags',
+      } as unknown as Request
 
-      await expect(
-        guard.canActivate(mockExecutionContext as ExecutionContext),
-      ).rejects.toThrow(UnauthorizedException)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['ip:192.168.1.1', 'user:user123'],
-        expect.any(Number),
-        expect.any(Number),
-      )
+      const result = guard.testExtractApiPrefix(mockRequest)
+      expect(result).toBe('gelbooru')
     })
 
-    it('should use IP only when no clientId header', async () => {
-      mockRequest.headers = {}
-      Object.defineProperty(mockRequest, 'ip', {
-        value: '192.168.1.1',
-        writable: true,
-        configurable: true,
-      })
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 1,
-        limit: 10,
-        remaining: 9,
-        resetTime: Date.now() + 60000,
-        apiPrefix: 'danbooru',
-        windowType: 'minute',
-      } as RateLimitResult)
+    it('should return "default" for non-matching path', () => {
+      const mockRequest = {
+        path: '/other/path',
+      } as unknown as Request
 
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['ip:192.168.1.1'],
-        expect.any(Number),
-        expect.any(Number),
-      )
+      const result = guard.testExtractApiPrefix(mockRequest)
+      expect(result).toBe('default')
     })
 
-    it('should use global limit when no IP or clientId', async () => {
-      Object.defineProperty(mockRequest, 'ip', {
-        value: undefined,
-        writable: true,
-        configurable: true,
-      })
-      mockRequest.headers = {}
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 1,
-        limit: 10,
-        remaining: 9,
-        resetTime: Date.now() + 60000,
-        apiPrefix: 'gelbooru',
-        windowType: 'minute',
-      } as RateLimitResult)
+    it('should return "default" for empty path', () => {
+      const mockRequest = {
+        path: '',
+      } as unknown as Request
 
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['global'],
-        expect.any(Number),
-        expect.any(Number),
-      )
-    })
-
-    it('should handle different API prefixes via config', async () => {
-      mockConfigService.get.mockReturnValueOnce('gelbooru')
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue(
-        Promise.resolve({
-          allowed: true,
-          current: 1,
-          limit: 10,
-          remaining: 9,
-          resetTime: Date.now() + 60000,
-          apiPrefix: 'danbooru',
-          windowType: 'minute',
-        } as RateLimitResult),
-      )
-
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'gelbooru',
-        ['ip:192.168.1.1', 'user:user123'],
-        expect.any(Number),
-        expect.any(Number),
-      )
-    })
-
-    it('should extract clientId from query params if no header', async () => {
-      mockRequest.headers = undefined
-      mockRequest.query = { clientId: 'query-user' } as any
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 1,
-        limit: 10,
-        remaining: 9,
-        resetTime: Date.now() + 60000,
-        apiPrefix: 'danbooru',
-        windowType: 'minute',
-        clientId: 'query-user',
-      } as RateLimitResult)
-
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['ip:192.168.1.1', 'user:query-user'],
-        expect.any(Number),
-        expect.any(Number),
-      )
-    })
-
-    it('should handle composite checks with multiple identifiers', async () => {
-      Object.defineProperty(mockRequest, 'ip', {
-        value: '192.168.1.1',
-        writable: true,
-        configurable: true,
-      })
-      mockRequest.headers = { 'x-client-id': 'user123', 'x-api-key': 'key456' }
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 3,
-        limit: 10,
-        remaining: 7,
-        resetTime: Date.now() + 60000,
-        apiPrefix: 'danbooru',
-        windowType: 'minute',
-      } as RateLimitResult)
-
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalledWith(
-        'danbooru',
-        ['ip:192.168.1.1', 'user:user123', 'api:key456'],
-        expect.any(Number),
-        expect.any(Number),
-      )
-    })
-
-    it('should log rate limit stats on successful pass', async () => {
-      const originalLogger = (guard as any).logger
-      const mockLogger = { debug: jest.fn() }
-      ;(guard as any).logger = mockLogger
-      mockRateLimitManager.checkCompositeRateLimit.mockResolvedValue({
-        allowed: true,
-        current: 2,
-        limit: 10,
-        remaining: 8,
-        resetTime: Date.now() + 3600000,
-        apiPrefix: 'danbooru',
-        windowType: 'hour',
-      } as RateLimitResult)
-      mockRateLimitManager.getRateLimitStatus.mockResolvedValue({
-        apiPrefix: 'danbooru',
-        clientId: 'ip:192.168.1.1',
-        current: 2,
-        limit: 10,
-        remaining: 8,
-        resetTime: Date.now() + 3600000,
-        windowType: 'hour',
-      })
-
-      await guard.canActivate(mockExecutionContext as ExecutionContext)
-      ;(guard as any).logger = originalLogger
-
-      expect(mockRateLimitManager.getRateLimitStatus).toHaveBeenCalledWith(
-        'danbooru',
-        'ip:192.168.1.1',
-      )
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Rate limit check passed'),
-        expect.objectContaining({ remaining: 8 }),
-      )
-    })
-
-    it('should handle rate limit errors gracefully', async () => {
-      const rateLimitError = new Error('Redis unavailable')
-      mockRateLimitManager.checkCompositeRateLimit.mockRejectedValue(
-        rateLimitError,
-      )
-
-      await expect(
-        guard.canActivate(mockExecutionContext as ExecutionContext),
-      ).rejects.toThrow(UnauthorizedException)
-      expect(mockRateLimitManager.checkCompositeRateLimit).toHaveBeenCalled()
+      const result = guard.testExtractApiPrefix(mockRequest)
+      expect(result).toBe('default')
     })
   })
 
-  describe('extractIdentifiers', () => {
-    it('should extract IP and clientId correctly', () => {
-      const identifiers = (guard as any).extractIdentifiers(
-        mockRequest as Request,
-        'danbooru',
-      )
-      expect(identifiers).toEqual(['ip:192.168.1.1', 'user:user123'])
+  describe('extractIp', () => {
+    it('should return req.ip when available', () => {
+      const mockRequest = {
+        ip: '127.0.0.1',
+      } as unknown as Request
+
+      const result = guard.testExtractIp(mockRequest)
+      expect(result).toBe('127.0.0.1')
     })
 
-    it('should handle missing clientId', () => {
-      mockRequest.headers = undefined
-      const identifiers = (guard as any).extractIdentifiers(
-        mockRequest as Request,
-        'danbooru',
-      )
-      expect(identifiers).toEqual(['ip:192.168.1.1'])
+    it('should fallback to req.connection.remoteAddress', () => {
+      const mockConnection = {
+        remoteAddress: '192.168.1.1',
+      } as unknown as Socket
+      const mockRequest = {
+        ip: undefined,
+        connection: mockConnection,
+      } as unknown as Request
+
+      const result = guard.testExtractIp(mockRequest)
+      expect(result).toBe('192.168.1.1')
     })
 
-    it('should use global when no identifiers', () => {
-      Object.defineProperty(mockRequest, 'ip', {
-        value: undefined,
-        writable: true,
-        configurable: true,
-      })
-      mockRequest.headers = undefined
-      const identifiers = (guard as any).extractIdentifiers(
-        mockRequest as Request,
-        'danbooru',
-      )
-      expect(identifiers).toEqual(['global'])
+    it('should return "unknown" when no IP available', () => {
+      const mockConnection = {} as unknown as Socket
+      const mockRequest = {
+        ip: undefined,
+        connection: mockConnection,
+      } as unknown as Request
+
+      const result = guard.testExtractIp(mockRequest)
+      expect(result).toBe('unknown')
+    })
+  })
+
+  describe('getTracker', () => {
+    it('should return formatted tracker string', async () => {
+      const mockRequest = {
+        path: '/api/danbooru/posts',
+        ip: 'test-ip',
+        headers: { 'x-client-id': 'test-client' },
+      } as unknown as Request
+
+      const result = await guard.testGetTracker(mockRequest)
+      expect(result).toBe('danbooru:test-ip:test-client')
     })
 
-    it('should prefix with apiPrefix', () => {
-      const identifiers = (guard as any).extractIdentifiers(
-        mockRequest as Request,
-        'gelbooru',
-      )
-      expect(identifiers).toContain('ip:192.168.1.1')
-      expect(identifiers).toContain('user:user123')
+    it('should use "anonymous" when no x-client-id', async () => {
+      const mockRequest = {
+        path: '/api/danbooru/posts',
+        ip: 'test-ip',
+        headers: {},
+      } as unknown as Request
+
+      const result = await guard.testGetTracker(mockRequest)
+      expect(result).toBe('danbooru:test-ip:anonymous')
+    })
+  })
+
+  describe('canActivate', () => {
+    beforeEach(() => {
+      const mockRequest = {
+        path: '/api/danbooru/posts',
+        ip: '127.0.0.1',
+        headers: {},
+        connection: { remoteAddress: '127.0.0.1' } as unknown as Socket,
+      } as unknown as Request
+
+      const mockGetRequest = jest.fn().mockReturnValue(mockRequest)
+      const mockGetResponse = jest.fn().mockReturnValue({} as Response)
+      const mockGetNext = jest.fn().mockReturnValue({})
+
+      const mockHttpHost = {
+        getRequest: mockGetRequest,
+        getResponse: mockGetResponse,
+        getNext: mockGetNext,
+      }
+
+      mockContext = {
+        switchToHttp: () => mockHttpHost,
+      }
+    })
+
+    it('should call super.canActivate and return its result', async () => {
+      const mockSuperCanActivate = jest
+        .spyOn(ThrottlerGuard.prototype, 'canActivate')
+        .mockResolvedValueOnce(true as boolean)
+
+      const result = await guard.canActivate(mockContext as ExecutionContext)
+      expect(mockSuperCanActivate).toHaveBeenCalledWith(mockContext)
+      expect(result).toBe(true)
+
+      mockSuperCanActivate.mockRestore()
+    })
+
+    it('should handle false from super.canActivate', async () => {
+      const mockSuperCanActivate = jest
+        .spyOn(ThrottlerGuard.prototype, 'canActivate')
+        .mockResolvedValueOnce(false as boolean)
+
+      const result = await guard.canActivate(mockContext as ExecutionContext)
+      expect(result).toBe(false)
+
+      mockSuperCanActivate.mockRestore()
     })
   })
 })
