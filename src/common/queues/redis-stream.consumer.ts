@@ -227,7 +227,6 @@ export class RedisStreamConsumer
       .digest('hex')
     const lockKey = `lock:query:${apiPrefix}:${fullQueryHash}`
     let lockValue: string | null = null
-    let heartbeatInterval: NodeJS.Timeout | null = null
 
     try {
       // 2. Job-level deduplication as final safeguard
@@ -271,6 +270,40 @@ export class RedisStreamConsumer
           errorResponse,
         )
         return { skipped: true, reason: 'DLQ duplicate' }
+      }
+
+      // Acquire query lock
+      lockValue = await this.acquireLock(lockKey, jobId)
+      if (!lockValue) {
+        this.logger.warn(
+          `Failed to acquire query lock for ${apiPrefix} job ${jobId} (hash: ${queryHash})`,
+          jobId,
+        )
+
+        const responseKey = getStreamName(apiPrefix, 'responses')
+        const errorResponse = JSON.stringify({
+          type: 'error',
+          jobId,
+          error: 'Query currently being processed by another worker',
+          timestamp: Date.now(),
+        })
+
+        await this.redis.xadd(
+          responseKey,
+          '*',
+          'jobId',
+          jobId,
+          'data',
+          errorResponse,
+        )
+        return { skipped: true, reason: 'lock failed' }
+      }
+
+      // Lazy load validation service if not already loaded
+      if (!this.validationService) {
+        this.validationService = this.moduleRef.get(ValidationService, {
+          strict: false,
+        })
       }
 
       // 4. Message validation using extracted method
@@ -351,11 +384,6 @@ export class RedisStreamConsumer
       )
       return { success: false, error: errorMessage }
     } finally {
-      // Stop heartbeat
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval)
-      }
-
       // Always release the query lock
       if (lockValue) {
         await this.releaseLock(lockKey, lockValue)
@@ -368,7 +396,7 @@ export class RedisStreamConsumer
     lockKey: string,
     jobId: string,
     maxRetries = 3,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     let retryCount = 0
     let delay = 100 // Start with 100ms
 
@@ -379,7 +407,7 @@ export class RedisStreamConsumer
       )
       if (lockValue) {
         this.logger.debug(`Query lock acquired for ${lockKey} by job ${jobId}`)
-        return true
+        return lockValue
       }
 
       retryCount++
@@ -394,7 +422,7 @@ export class RedisStreamConsumer
     this.logger.warn(
       `Failed to acquire lock after ${maxRetries} retries for job ${jobId}`,
     )
-    return false
+    return null
   }
 
   // Helper method to release query lock using LockUtil (only if owned by this job)
