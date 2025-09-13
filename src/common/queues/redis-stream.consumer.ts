@@ -18,8 +18,27 @@ import {
 } from '../../common/constants'
 import { LockUtil } from '../redis/utils/lock.util'
 import * as crypto from 'crypto'
-import { encrypt, decrypt } from '../crypto/crypto.util'
 import { ModuleRef } from '@nestjs/core'
+
+interface IValidationError {
+  type: 'error'
+  jobId: string
+  error: string
+  code?: string
+  apiPrefix?: string
+}
+
+interface IValidationResult {
+  valid: boolean
+  error?: IValidationError
+}
+
+interface IProcessResult {
+  success?: boolean
+  skipped?: boolean
+  reason?: string
+  error?: string
+}
 
 @Processor('danbooru-requests', { concurrency: 5 })
 @Injectable()
@@ -28,8 +47,8 @@ export class RedisStreamConsumer
   implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(RedisStreamConsumer.name)
-  private danbooruService: DanbooruService
-  private validationService: ValidationService
+  private danbooruService?: DanbooruService
+  private validationService?: ValidationService
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -58,12 +77,12 @@ export class RedisStreamConsumer
     data: { query: string; clientId?: string; apiPrefix?: string },
     apiPrefix: string,
     jobId: string,
-  ): Promise<{ valid: boolean; error?: any }> {
+  ): Promise<IValidationResult> {
     try {
       // Ensure apiPrefix is set in validation config
       const validationData = { ...data, apiPrefix }
       const validation =
-        await this.validationService.validateRequest(validationData)
+        await this.validationService!.validateRequest(validationData)
 
       if (!validation.valid) {
         const queryHash = crypto
@@ -78,10 +97,12 @@ export class RedisStreamConsumer
         return { valid: false, error: validation.error }
       }
 
-      return { valid: true, error: null }
-    } catch (error) {
+      return { valid: true }
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
       this.logger.error(
-        `Validation service error for job ${jobId} (${apiPrefix}): ${error.message}`,
+        `Validation service error for job ${jobId} (${apiPrefix}): ${errorMessage}`,
         jobId,
       )
       return {
@@ -122,9 +143,11 @@ export class RedisStreamConsumer
         )
       }
       return hasDuplicate
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
       this.logger.error(
-        `Dedup check failed for ${apiPrefix} job ${jobId}: ${error.message}`,
+        `Dedup check failed for ${apiPrefix} job ${jobId}: ${errorMessage}`,
         jobId,
       )
       return false // Allow processing if dedup check fails to avoid blocking
@@ -147,52 +170,54 @@ export class RedisStreamConsumer
   ): Promise<void> {
     try {
       // Get the appropriate service based on apiPrefix
-      let apiService: any
       switch (apiPrefix.toLowerCase()) {
-        case 'danbooru':
+        case 'danbooru': {
           if (!this.danbooruService) {
             this.danbooruService = this.moduleRef.get(DanbooruService, {
               strict: false,
             })
           }
-          apiService = this.danbooruService
+          const apiService = this.danbooruService
+          if (!apiService) {
+            throw new Error(`API service not available for ${apiPrefix}`)
+          }
+
+          // Process the request using the API service
+          const queryHash = crypto
+            .createHash('sha256')
+            .update(query)
+            .digest('hex')
+            .slice(0, 8)
+          this.logger.debug(
+            `Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`,
+          )
+
+          await apiService.processRequest(jobId, query, clientId)
+
+          // Invalidate related caches after successful processing (if service supports it)
+          // Note: Cache invalidation should be handled by the specific API service
+          this.logger.debug(
+            `Cache invalidation responsibility delegated to ${apiPrefix} service for job ${jobId}`,
+          )
           break
+        }
         // Add more API services here as they are implemented
-        default:
+        default: {
           const errorMsg = `Unsupported API provider: ${apiPrefix}`
           this.logger.error(errorMsg, jobId)
           throw new Error(errorMsg)
+        }
       }
-
-      if (!apiService) {
-        throw new Error(`API service not available for ${apiPrefix}`)
-      }
-
-      // Process the request using the API service
-      const queryHash = crypto
-        .createHash('sha256')
-        .update(query)
-        .digest('hex')
-        .slice(0, 8)
-      this.logger.debug(
-        `Processing ${apiPrefix} job ${jobId} (query hash: ${queryHash})`,
-      )
-
-      await apiService.processRequest(jobId, query, clientId)
-
-      // Invalidate related caches after successful processing (if service supports it)
-      // Note: Cache invalidation should be handled by the specific API service
-      this.logger.debug(
-        `Cache invalidation responsibility delegated to ${apiPrefix} service for job ${jobId}`,
-      )
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
       const queryHash = crypto
         .createHash('sha256')
         .update(query)
         .digest('hex')
         .slice(0, 8)
       this.logger.error(
-        `Job processing failed for ${apiPrefix} job ${jobId} (query hash: ${queryHash}): ${error.message}`,
+        `Job processing failed for ${apiPrefix} job ${jobId} (query hash: ${queryHash}): ${errorMessage}`,
         jobId,
       )
       throw error
@@ -205,7 +230,7 @@ export class RedisStreamConsumer
    */
   async process(
     job: Job<{ query: string; clientId?: string; apiPrefix?: string }>,
-  ) {
+  ): Promise<IProcessResult> {
     const jobId = crypto.randomUUID()
     const data = job.data
     const { query, clientId, apiPrefix = 'danbooru' } = data
@@ -335,12 +360,12 @@ export class RedisStreamConsumer
             this.redis,
             apiPrefix,
             jobId,
-            validationResult.error.error,
+            validationResult.error!.error,
             query, // plaintext - will be encrypted in addToDLQ
           )
         }
 
-        throw new Error(`Validation failed: ${validationResult.error.error}`)
+        throw new Error(`Validation failed: ${validationResult.error!.error}`)
       }
 
       // 5. Process job using extracted method
@@ -348,7 +373,7 @@ export class RedisStreamConsumer
 
       this.logger.debug(`${apiPrefix} job ${jobId} processed successfully`)
       return { success: true }
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error)
       this.logger.error(
