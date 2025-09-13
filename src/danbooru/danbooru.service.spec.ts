@@ -217,7 +217,10 @@ describe('DanbooruService', () => {
 
       // Verify lock released
 
-      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(lockKey, 'lock-value')
+      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(
+        lockKey,
+        'lock-value',
+      )
     })
 
     it('should return cached response when cache hit (random=true)', async () => {
@@ -259,7 +262,10 @@ describe('DanbooruService', () => {
 
       // Lock should be released
 
-      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(lockKey, 'lock-value')
+      expect(mockLockUtil.releaseLock).toHaveBeenCalledWith(
+        lockKey,
+        'lock-value',
+      )
     })
   })
 })

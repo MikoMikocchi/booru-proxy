@@ -81,12 +81,15 @@ describe('RedisStreamConsumer', () => {
       exists: jest.fn(),
       setex: jest.fn(),
       xrange: jest.fn(),
-    } as Partial<jest.Mocked<Redis>> & {exists: jest.Mock, setex: jest.Mock, xrange: jest.Mock}
+    } as Partial<jest.Mocked<Redis>> & {
+      exists: jest.Mock
+      setex: jest.Mock
+      xrange: jest.Mock
+    }
 
     mockModuleRef = {
       get: jest.fn(),
     }
-
     ;(mockRedis.exists as jest.Mock).mockResolvedValue(0)
     ;(mockRedis.setex as jest.Mock).mockResolvedValue('OK')
     ;(mockRedis.xrange as jest.Mock).mockResolvedValue([])
@@ -290,14 +293,25 @@ describe('RedisStreamConsumer', () => {
 
     it('should skip processing when lock acquisition fails', async () => {
       mockDedupCheck.mockResolvedValueOnce(false)
-      ;(mockLockUtilInstance.acquireLock as jest.Mock).mockImplementation(() => null)
+      ;(mockLockUtilInstance.acquireLock as jest.Mock).mockImplementation(
+        () => null,
+      )
 
       const result = await consumer.process(mockJob)
 
       expect(result).toEqual({ skipped: true, reason: 'lock failed' })
 
-      expect(mockLogger.warn).toHaveBeenNthCalledWith(1, 'Failed to acquire lock after 3 retries for job 123e4567-e89b-12d3-a456-426614174000')
-      expect(mockLogger.warn).toHaveBeenNthCalledWith(2, expect.stringContaining('Failed to acquire query lock for danbooru job 123e4567-e89b-12d3-a456-426614174000 (hash: test-que'), jobId)
+      expect(mockLogger.warn).toHaveBeenNthCalledWith(
+        1,
+        'Failed to acquire lock after 3 retries for job 123e4567-e89b-12d3-a456-426614174000',
+      )
+      expect(mockLogger.warn).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining(
+          'Failed to acquire query lock for danbooru job 123e4567-e89b-12d3-a456-426614174000 (hash: test-que',
+        ),
+        jobId,
+      )
 
       expect(mockRedis.xadd).toHaveBeenCalledWith(
         'danbooru:responses',
@@ -305,7 +319,9 @@ describe('RedisStreamConsumer', () => {
         'jobId',
         jobId,
         'data',
-        expect.stringContaining('Query currently being processed by another worker'),
+        expect.stringContaining(
+          'Query currently being processed by another worker',
+        ),
       )
 
       expect(mockModuleRef.get).not.toHaveBeenCalledWith(ValidationService, {
@@ -451,11 +467,14 @@ describe('RedisStreamConsumer', () => {
       ;(mockRedis.set as jest.Mock).mockResolvedValue('OK')
       mockLockUtilInstance!.acquireLock!.mockResolvedValue(jobId)
       mockLockUtilInstance!.releaseLock!.mockResolvedValue(true)
-      ;(mockModuleRef.get as jest.Mock).mockImplementation((service: unknown) => {
-        if (service === ValidationService) return mockValidationServiceInstance
-        if (service === DanbooruService) return mockDanbooruServiceInstance
-        return null
-      })
+      ;(mockModuleRef.get as jest.Mock).mockImplementation(
+        (service: unknown) => {
+          if (service === ValidationService)
+            return mockValidationServiceInstance
+          if (service === DanbooruService) return mockDanbooruServiceInstance
+          return null
+        },
+      )
       ;(
         mockValidationServiceInstance.validateRequest as jest.Mock
       ).mockResolvedValue({
@@ -530,7 +549,9 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000'),
+        expect.stringContaining(
+          'Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000',
+        ),
       )
     })
 
@@ -551,7 +572,9 @@ describe('RedisStreamConsumer', () => {
       )
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        expect.stringContaining('Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000'),
+        expect.stringContaining(
+          'Query lock acquired for lock:test by job 123e4567-e89b-12d3-a456-426614174000',
+        ),
       )
     })
 

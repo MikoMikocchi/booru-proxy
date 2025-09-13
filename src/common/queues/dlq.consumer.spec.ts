@@ -51,12 +51,10 @@ describe('DlqConsumer', () => {
       return { success: false }
     })
 
-    mockMoveToDeadQueue.mockImplementation(
-      async () => {
-        await Promise.resolve() // to satisfy require-await
-        return
-      },
-    )
+    mockMoveToDeadQueue.mockImplementation(async () => {
+      await Promise.resolve() // to satisfy require-await
+      return
+    })
 
     mockDedupCheck.mockImplementation(async (redis, query) => {
       await Promise.resolve() // to satisfy require-await
@@ -105,7 +103,6 @@ describe('DlqConsumer', () => {
       return false
     })
 
-
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DlqConsumer,
@@ -127,7 +124,10 @@ describe('DlqConsumer', () => {
   describe('onModuleInit', () => {
     it('should start DLQ processing on module init', async () => {
       const startProcessingSpy = jest
-        .spyOn(consumer as unknown as { startProcessing: jest.Mock }, 'startProcessing')
+        .spyOn(
+          consumer as unknown as { startProcessing: jest.Mock },
+          'startProcessing',
+        )
         .mockResolvedValue(undefined)
       const loggerSpy = jest.spyOn(mockLogger, 'log')
 

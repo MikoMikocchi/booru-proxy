@@ -54,7 +54,9 @@ async function bootstrap() {
     const redisUrlRaw =
       configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
     const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
-    logger.debug(`DEBUG: REDIS_PASSWORD=${redisPassword ? '[REDACTED]' : undefined}`)
+    logger.debug(
+      `DEBUG: REDIS_PASSWORD=${redisPassword ? '[REDACTED]' : undefined}`,
+    )
     logger.debug(`DEBUG: REDIS_URL raw=${redisUrlRaw}`)
     logger.debug(`DEBUG: REDIS_USE_TLS=${useTls}`)
 
@@ -156,10 +158,14 @@ async function bootstrap() {
 
     // Set up signal handlers after full initialization
     process.on('SIGINT', () => {
-      void gracefulShutdown().catch(err => logger.error('SIGINT shutdown error', err as Error))
+      void gracefulShutdown().catch(err =>
+        logger.error('SIGINT shutdown error', err as Error),
+      )
     })
     process.on('SIGTERM', () => {
-      void gracefulShutdown().catch(err => logger.error('SIGTERM shutdown error', err as Error))
+      void gracefulShutdown().catch(err =>
+        logger.error('SIGTERM shutdown error', err as Error),
+      )
     })
   } catch (error) {
     logger.error('Failed to start microservice', error as Error)
@@ -167,7 +173,7 @@ async function bootstrap() {
   }
 }
 
-void bootstrap().catch((err) => {
+void bootstrap().catch(err => {
   const logger = new Logger('Bootstrap')
   logger.error('Bootstrap failed', err as Error)
   process.exit(1)

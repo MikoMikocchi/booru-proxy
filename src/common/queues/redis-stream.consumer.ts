@@ -365,7 +365,10 @@ export class RedisStreamConsumer
             query, // plaintext - will be encrypted in addToDLQ
           )
         } else {
-          this.logger.warn(`Skipping DLQ for duplicate validation error: ${errorMsg}`, jobId)
+          this.logger.warn(
+            `Skipping DLQ for duplicate validation error: ${errorMsg}`,
+            jobId,
+          )
         }
 
         return { success: false, error: errorMsg }

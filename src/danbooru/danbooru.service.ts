@@ -81,13 +81,14 @@ export class DanbooruService {
       // Start heartbeat to extend lock every 10s
       heartbeatInterval = setInterval(() => {
         if (lockValue) {
-          this.lockUtil.extendLock(
-            lockKey,
-            lockValue,
-            QUERY_LOCK_TIMEOUT_SECONDS,
-          ).catch((err) => {
-            this.logger.warn(`Failed to extend lock for ${lockKey} in service: ${(err as Error)?.message || String(err)}`, jobId)
-          })
+          this.lockUtil
+            .extendLock(lockKey, lockValue, QUERY_LOCK_TIMEOUT_SECONDS)
+            .catch(err => {
+              this.logger.warn(
+                `Failed to extend lock for ${lockKey} in service: ${(err as Error)?.message || String(err)}`,
+                jobId,
+              )
+            })
         }
       }, 10000)
 
@@ -141,7 +142,10 @@ export class DanbooruService {
         return error
       }
 
-      const responseData = this.buildSuccessResponse(post as DanbooruPost, jobId)
+      const responseData = this.buildSuccessResponse(
+        post as DanbooruPost,
+        jobId,
+      )
       await this.publishResponse(jobId, responseData)
 
       // Cache the successful response using unified key format
