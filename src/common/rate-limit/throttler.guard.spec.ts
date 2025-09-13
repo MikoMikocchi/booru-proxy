@@ -1,9 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing'
 import { ExecutionContext } from '@nestjs/common'
-import {
-  ThrottlerGuard,
-  ThrottlerModule,
-} from '@nestjs/throttler'
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler'
 import { Reflector } from '@nestjs/core'
 import type { Request, Response } from 'express'
 import type { Socket } from 'net'
@@ -35,10 +32,7 @@ describe('ApiThrottlerGuard', () => {
           throttlers: [{ ttl: 60, limit: 10 }],
         }),
       ],
-      providers: [
-        Reflector,
-        TestApiThrottlerGuard,
-      ],
+      providers: [Reflector, TestApiThrottlerGuard],
     }).compile()
 
     guard = module.get<TestApiThrottlerGuard>(TestApiThrottlerGuard)
