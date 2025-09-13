@@ -176,7 +176,11 @@ describe('CacheService', () => {
         .update(seedString)
         .digest('hex')
         .slice(0, 16)
-      const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, ' ').trim()
+      const normalizedQuery = query
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
       const queryHash = crypto
         .createHash('md5')
         .update(normalizedQuery)
@@ -225,11 +229,7 @@ describe('CacheService', () => {
     it('should set cache with default TTL without limit or tags', async () => {
       await service.setCache(defaultApiPrefix, defaultQuery, mockData, false)
 
-      expect(mockSetex).toHaveBeenCalledWith(
-        defaultCacheKey,
-        mockTtl,
-        mockData,
-      )
+      expect(mockSetex).toHaveBeenCalledWith(defaultCacheKey, mockTtl, mockData)
     })
 
     it('should use custom TTL', async () => {
@@ -268,11 +268,7 @@ describe('CacheService', () => {
         tags,
       )
 
-      expect(mockSetex).toHaveBeenCalledWith(
-        keyWithParams,
-        mockTtl,
-        mockData,
-      )
+      expect(mockSetex).toHaveBeenCalledWith(keyWithParams, mockTtl, mockData)
     })
 
     it('should handle backend setex error', async () => {
@@ -299,7 +295,13 @@ describe('CacheService', () => {
       const tagHash = crypto.createHash('md5').update(sortedTags).digest('hex')
       const keyWithParams = `${defaultCacheKey}:limit:${limit}:tag:${tagHash}`
 
-      await service.deleteCache(defaultApiPrefix, defaultQuery, false, limit, tags)
+      await service.deleteCache(
+        defaultApiPrefix,
+        defaultQuery,
+        false,
+        limit,
+        tags,
+      )
 
       expect(mockDel).toHaveBeenCalledWith(keyWithParams)
     })
@@ -523,11 +525,7 @@ describe('CacheService', () => {
       const result = await service.getOrFetch(key, fetchFn)
 
       expect(mockGet).toHaveBeenCalledWith(key)
-      expect(mockSetex).toHaveBeenCalledWith(
-        key,
-        mockTtl,
-        freshData,
-      )
+      expect(mockSetex).toHaveBeenCalledWith(key, mockTtl, freshData)
       expect(fetchFn).toHaveBeenCalledTimes(1)
       expect(result).toEqual(freshData)
     })
@@ -542,11 +540,7 @@ describe('CacheService', () => {
 
       await service.getOrFetch(key, fetchFn, customTtl)
 
-      expect(mockSetex).toHaveBeenCalledWith(
-        key,
-        customTtl,
-        freshData,
-      )
+      expect(mockSetex).toHaveBeenCalledWith(key, customTtl, freshData)
     })
 
     it('should propagate fetchFn error', async () => {
@@ -556,7 +550,9 @@ describe('CacheService', () => {
       fetchFn.mockRejectedValueOnce(error)
       mockGet.mockResolvedValueOnce(null)
 
-      await expect(service.getOrFetch(key, fetchFn)).rejects.toThrow('Fetch error')
+      await expect(service.getOrFetch(key, fetchFn)).rejects.toThrow(
+        'Fetch error',
+      )
     })
   })
 })

@@ -93,9 +93,9 @@ import type { PeerCertificate } from 'node:tls'
 
               checkServerIdentity: (
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                  _hostname: string,
+                _hostname: string,
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                  _cert: PeerCertificate,
+                _cert: PeerCertificate,
               ) => undefined, // Skip hostname verification for Docker 'redis' vs 'localhost' cert
             }
           }
