@@ -6,7 +6,7 @@ interface ExtendedRedis extends RedisType {
   defineCommand(
     name: string,
     definition: { numberOfKeys: number; lua: string },
-  ): ExtendedRedis
+  ): this
   extendLock(
     key: string,
     lockValue: string,
@@ -27,7 +27,7 @@ export class LockUtil {
     else
       return 0
     end
-  `
+  ` as const
 
   private readonly releaseLockScript = `
     if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -35,10 +35,9 @@ export class LockUtil {
     else
       return 0
     end
-  `
+  ` as const
 
   constructor(@Inject('REDIS_CLIENT') private readonly redis: ExtendedRedis) {
-    // Define Lua scripts as commands for ioredis
     this.redis.defineCommand('extendLock', {
       numberOfKeys: 1,
       lua: this.extendLockScript,
@@ -51,7 +50,7 @@ export class LockUtil {
   }
 
   async acquireLock(key: string, ttlSeconds: number): Promise<string | null> {
-    const lockValue = uuidv4() // Unique identifier for this lock instance
+    const lockValue = uuidv4()
     const result = await this.redis.set(key, lockValue, 'EX', ttlSeconds, 'NX')
 
     if (result === 'OK') {
@@ -59,7 +58,7 @@ export class LockUtil {
       return lockValue
     }
 
-    return null // Lock not acquired
+    return null
   }
 
   async extendLock(
@@ -78,10 +77,8 @@ export class LockUtil {
       }
 
       return success
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error)
-      this.logger.error(`Error extending lock for key ${key}: ${errorMessage}`)
+    } catch (error) {
+      this.logger.error(`Error extending lock for key ${key}:`, error as Error)
       return false
     }
   }
@@ -98,70 +95,60 @@ export class LockUtil {
       }
 
       return success
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error)
-      this.logger.error(`Error releasing lock for key ${key}: ${errorMessage}`)
+    } catch (error) {
+      this.logger.error(`Error releasing lock for key ${key}:`, error as Error)
       return false
     }
   }
 
-  // Convenience method to acquire lock with heartbeat
   async withLock<T>(
     key: string,
     ttlSeconds: number,
     operation: () => Promise<T>,
-    heartbeatIntervalMs: number = 10000, // 10 seconds default
+    heartbeatIntervalMs = 10000,
   ): Promise<T | null> {
-    let lockValue: string | null = null
-    let heartbeatInterval: NodeJS.Timeout | null = null
+    const lockValue = await this.acquireLock(key, ttlSeconds)
+    if (!lockValue) {
+      this.logger.warn(
+        `Failed to acquire lock for key: ${key}, skipping operation`,
+      )
+      return null
+    }
+
+    const heartbeatInterval = this.startHeartbeat(
+      key,
+      lockValue,
+      ttlSeconds,
+      heartbeatIntervalMs,
+    )
 
     try {
-      // Acquire lock
-      lockValue = await this.acquireLock(key, ttlSeconds)
-      if (!lockValue) {
-        this.logger.warn(
-          `Failed to acquire lock for key: ${key}, skipping operation`,
-        )
-        return null // Fallback: return null to indicate "try later"
-      }
-
-      // Start heartbeat to extend lock periodically
-      heartbeatInterval = setInterval(() => {
-        if (lockValue) {
-          this.extendLock(key, lockValue, ttlSeconds).catch(
-            (error: unknown) => {
-              const errorMessage =
-                error instanceof Error ? error.message : String(error)
-              this.logger.warn(
-                `Heartbeat failed for lock: ${key}, operation may be interrupted: ${errorMessage}`,
-              )
-            },
-          )
-          // Note: We don't clear interval here as operation might still complete
-        }
-      }, heartbeatIntervalMs)
-
-      // Execute the main operation
-      const result = await operation()
-      return result
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error)
+      return await operation()
+    } catch (error) {
       this.logger.error(
-        `Error in locked operation for key ${key}: ${errorMessage}`,
+        `Error in locked operation for key ${key}:`,
+        error as Error,
       )
       throw error
     } finally {
-      // Stop heartbeat
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval)
-      }
-
-      // Release lock if we own it
-      if (lockValue) {
-        await this.releaseLock(key, lockValue)
-      }
+      clearInterval(heartbeatInterval)
+      await this.releaseLock(key, lockValue)
     }
+  }
+
+  private startHeartbeat(
+    key: string,
+    lockValue: string,
+    ttlSeconds: number,
+    intervalMs: number,
+  ): NodeJS.Timeout {
+    return setInterval(() => {
+      this.extendLock(key, lockValue, ttlSeconds).catch(error => {
+        this.logger.warn(
+          `Heartbeat failed for lock: ${key}, operation may be interrupted:`,
+          error as Error,
+        )
+      })
+    }, intervalMs)
   }
 }

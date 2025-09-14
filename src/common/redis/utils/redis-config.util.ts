@@ -1,95 +1,151 @@
 import { ConfigService } from '@nestjs/config'
 import * as fs from 'node:fs'
-import type { ConnectionOptions } from 'node:tls'
+import type { ConnectionOptions, PeerCertificate } from 'node:tls'
 import { Logger } from '@nestjs/common'
+import { RedisOptions } from 'ioredis'
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+export const ignoreServerIdentity = (
+  _hostname: string,
+  _cert: PeerCertificate,
+) => undefined
+/* eslint-enable @typescript-eslint/no-unused-vars */
+
+function parseRedisUrl(redisUrl: string): URL {
+  try {
+    const url = new URL(redisUrl)
+    if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
+      throw new Error(
+        'Invalid protocol for Redis URL. Must be redis: or rediss:',
+      )
+    }
+    return url
+  } catch {
+    throw new Error('Invalid Redis URL format')
+  }
+}
 
 export function createRedisConfig(
   configService: ConfigService,
-  logger: Logger,
-): {
-  host: string
-  port: number
-  username?: string
-  password?: string
-  tls?: ConnectionOptions
-  retryStrategy: (times: number) => number | null
-} {
-  const redisPassword = configService.get<string>('REDIS_PASSWORD')
+  logger?: Logger,
+): RedisOptions {
+  const log = (msg: string, ...args: unknown[]) => logger?.debug(msg, ...args)
+
   const redisUrlRaw =
     configService.get<string>('REDIS_URL') || 'redis://localhost:6379'
   const useTls = configService.get<boolean>('REDIS_USE_TLS', false)
+  const redisPassword = configService.get<string>('REDIS_PASSWORD')
 
-  logger.debug(
-    `DEBUG: REDIS_PASSWORD=${redisPassword ? '[REDACTED]' : undefined}`,
-  )
-  logger.debug(`DEBUG: REDIS_URL raw=${redisUrlRaw}`)
-  logger.debug(`DEBUG: REDIS_USE_TLS=${useTls}`)
+  log(`REDIS_URL raw=${redisUrlRaw}`)
+  log(`REDIS_USE_TLS=${useTls}`)
 
-  // Always parse the raw URL (assumes redis:// protocol)
-  const parsedUrl = new URL(redisUrlRaw)
-  const host = parsedUrl.hostname
-  const port = Number(parsedUrl.port) || 6379
-  const username = parsedUrl.username || undefined
-  const password = parsedUrl.password || redisPassword || undefined
-
-  logger.debug(
-    `DEBUG: Parsed - host: ${host}, port: ${port}, username: ${username}, useTls: ${useTls}`,
-  )
-
-  let tlsConfig: ConnectionOptions | undefined = undefined
-  if (useTls) {
-    const caPath = configService.get<string>('REDIS_TLS_CA')
-    const certPath = configService.get<string>('REDIS_TLS_CERT')
-    const keyPath = configService.get<string>('REDIS_TLS_KEY')
-
-    if (caPath && certPath && keyPath) {
-      try {
-        const caContent = fs.readFileSync(caPath, 'utf8')
-        const certContent = fs.readFileSync(certPath, 'utf8')
-        const keyContent = fs.readFileSync(keyPath, 'utf8')
-
-        // Validate PEM format
-        if (
-          !caContent.includes('-----BEGIN CERTIFICATE-----') ||
-          !certContent.includes('-----BEGIN CERTIFICATE-----') ||
-          (!keyContent.includes('-----BEGIN PRIVATE KEY-----') &&
-            !keyContent.includes('-----BEGIN RSA PRIVATE KEY-----'))
-        ) {
-          throw new Error('Invalid PEM format in certificate files')
-        }
-
-        tlsConfig = {
-          ca: [caContent],
-          cert: [certContent],
-          key: keyContent,
-          rejectUnauthorized: process.env.NODE_ENV !== 'development', // Skip validation in dev for self-signed certs
-        } as ConnectionOptions
-      } catch (error) {
-        logger.warn('Failed to load TLS certificates', error as Error)
-        tlsConfig = {
-          rejectUnauthorized: false, // Fallback for dev
-        } as ConnectionOptions
-      }
-    } else {
-      tlsConfig = {
-        rejectUnauthorized: false, // Fallback if paths not provided
-      } as ConnectionOptions
-    }
+  // Parse and validate URL
+  let parsedUrl: URL
+  try {
+    parsedUrl = parseRedisUrl(redisUrlRaw)
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : 'Unknown error'
+    throw new Error(`Invalid REDIS_URL: ${errMsg}`)
   }
+
+  // Handle TLS URL transformation
+  if (useTls && parsedUrl.protocol === 'redis:') {
+    parsedUrl.protocol = 'rediss:'
+    const password = parsedUrl.password || redisPassword || ''
+    const authPart = parsedUrl.username
+      ? `${parsedUrl.username}:${password}`
+      : `:${password}`
+    parsedUrl = new URL(`rediss://${authPart}@${parsedUrl.host}`)
+  }
+
+  const host = parsedUrl.hostname
+  const port = Number(parsedUrl.port) || (useTls ? 6380 : 6379)
+  const username = parsedUrl.username || undefined
+  const password = parsedUrl.password || undefined
+
+  log(
+    `Parsed - host: ${host}, port: ${port}, username: ${!!username}, useTls: ${useTls}`,
+  )
+
+  const tlsConfig = useTls ? createTlsConfig(configService, log) : undefined
 
   const retryStrategy = (times: number) => {
-    if (times > 10) {
+    if (times > 15) {
       return null
     }
-    return Math.min(times * 500, 3000)
+    return Math.min(100 * Math.pow(3, times - 1), 5000)
   }
 
-  return {
+  const options: RedisOptions = {
     host,
     port,
     username,
     password,
-    tls: tlsConfig,
+    ...(tlsConfig ? { tls: tlsConfig } : {}),
     retryStrategy,
+    reconnectOnError: () => 2.0,
+    lazyConnect: true,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    enableAutoPipelining: true,
+  }
+
+  return options
+}
+
+function createTlsConfig(
+  configService: ConfigService,
+  log: (msg: string, ...args: unknown[]) => void,
+): ConnectionOptions {
+  const caPath = configService.get<string>('REDIS_TLS_CA')
+  const certPath = configService.get<string>('REDIS_TLS_CERT')
+  const keyPath = configService.get<string>('REDIS_TLS_KEY')
+
+  if (!caPath || !certPath || !keyPath) {
+    log('TLS paths not provided, using insecure fallback')
+    return {
+      rejectUnauthorized: false,
+      checkServerIdentity: ignoreServerIdentity,
+    }
+  }
+
+  try {
+    const caContent = fs.readFileSync(caPath, 'utf8')
+    const certContent = fs.readFileSync(certPath, 'utf8')
+    const keyContent = fs.readFileSync(keyPath, 'utf8')
+
+    validatePem(caContent, 'CA')
+    validatePem(certContent, 'Cert')
+    validatePemKey(keyContent)
+
+    return {
+      ca: [caContent],
+      cert: [certContent],
+      key: keyContent,
+      rejectUnauthorized: process.env.NODE_ENV !== 'development',
+      checkServerIdentity: ignoreServerIdentity,
+    }
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error))
+    log('Failed to load TLS certificates, using insecure fallback', err)
+    return {
+      rejectUnauthorized: false,
+      checkServerIdentity: ignoreServerIdentity,
+    }
+  }
+}
+
+function validatePem(content: string, type: string): void {
+  if (!content.includes('-----BEGIN CERTIFICATE-----')) {
+    throw new Error(`Invalid PEM format in ${type} file`)
+  }
+}
+
+function validatePemKey(content: string): void {
+  if (
+    !content.includes('-----BEGIN PRIVATE KEY-----') &&
+    !content.includes('-----BEGIN RSA PRIVATE KEY-----')
+  ) {
+    throw new Error('Invalid PEM format in key file')
   }
 }
