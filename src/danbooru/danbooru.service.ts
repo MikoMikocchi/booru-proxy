@@ -21,6 +21,10 @@ import { RateLimitManagerService } from '../common/rate-limit/rate-limit-manager
 import { LockUtil } from '../common/redis/utils/lock.util'
 import Redis from 'ioredis'
 import * as crypto from 'crypto'
+import {
+  extractTagsFromQuery,
+  buildSuccessResponse,
+} from './utils/danbooru-utils'
 
 @Injectable()
 export class DanbooruService {
@@ -162,7 +166,7 @@ export class DanbooruService {
     return {
       random: this.configService.get<boolean>('DANBOORU_RANDOM') || true,
       limit: this.configService.get<number>('DANBOORU_LIMIT') || 1,
-      tags: this.extractTagsFromQuery(query),
+      tags: extractTagsFromQuery(query),
     }
   }
 
@@ -219,7 +223,13 @@ export class DanbooruService {
       throw new Error('No posts found for the query or API error')
     }
 
-    return this.buildSuccessResponse(post as DanbooruPost, jobId)
+    const response = buildSuccessResponse(post as DanbooruPost, jobId)
+    this.logger.log(
+      `Found post for job ${jobId}: author ${String(response.author)}, rating ${String(response.rating)}, copyright ${String(response.copyright)}`,
+      jobId,
+    )
+
+    return response
   }
 
   /**
@@ -315,65 +325,7 @@ export class DanbooruService {
     this.logger.log(`Published response for job ${jobId} to ${responseKey}`)
   }
 
-  private buildSuccessResponse(
-    post: DanbooruPost,
-    jobId: string,
-  ): DanbooruSuccessResponse {
-    const imageUrl = post.file_url
-    const author = post.tag_string_artist ?? null
-    const tags = post.tag_string_general
-    const rating = post.rating
-    const source = post.source ?? null
-    const copyright = post.tag_string_copyright
-    const id = post.id
-    const characters = post.tag_string_character ?? null
-
-    this.logger.log(
-      `Found post for job ${jobId}: author ${author}, rating ${rating}, copyright ${copyright}`,
-      jobId,
-    )
-
-    return {
-      type: 'success',
-      jobId,
-      imageUrl,
-      author,
-      tags,
-      rating,
-      source,
-      copyright,
-      id,
-      characters,
-    }
-  }
-
   // handleApiError and handleProcessingError removed: logic consolidated in handleErrorAndPublish
-
-  /**
-   * Extracts tags from Danbooru-style query string.
-   * Supports basic tag extraction: "tag1 tag2 rating:safe" -> ['tag1', 'tag2'].
-   * Filters out directives like rating:, limit: for cache key/invalidation.
-   * @param query - Danbooru query string
-   * @returns Sorted unique tags array
-   */
-  private extractTagsFromQuery(query: string): string[] {
-    if (!query || typeof query !== 'string') {
-      return []
-    }
-
-    const parts = query
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(
-        (part: string) =>
-          !['rating:', 'limit:', 'order:', 'score:'].some(directive =>
-            part.startsWith(directive),
-          ),
-      )
-
-    return [...new Set(parts)].sort()
-  }
 
   /**
    * Cache Invalidation Strategy:

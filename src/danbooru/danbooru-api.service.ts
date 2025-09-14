@@ -6,6 +6,7 @@ import { DanbooruPost } from './dto/danbooru-post.class'
 import { API_TIMEOUT_MS } from '../common/constants'
 import xss, { escapeHtml } from 'xss'
 import { BaseApiService, ApiConfig } from '../common/api/base-api.service'
+import { DANBOORU_STRING_FIELDS } from './constants/sanitization.constants'
 
 @Injectable()
 export class DanbooruApiService extends BaseApiService {
@@ -41,38 +42,16 @@ export class DanbooruApiService extends BaseApiService {
   protected sanitizeResponse(data: unknown): Record<string, unknown> {
     const sanitized = super.sanitizeResponse(data)
 
-    // Comprehensive Danbooru-specific sanitization using xss library
-    // Sanitize all potential string fields that could contain user-generated content
-    const stringFields = [
-      'tag_string_general',
-      'tag_string_artist',
-      'tag_string_copyright',
-      'tag_string_character',
-      'source',
-      'description',
-      'commentary_title',
-      'commentary_desc',
-      'file_url',
-      'large_file_url',
-      'preview_file_url',
-      'sample_file_url',
-      'pixiv_id',
-      'last_comment_at',
-      'created_at',
-      'updated_at',
-      'pixiv_artist_id',
-      'uploader_id',
-      'score',
-      'fav_count',
-      'comment_count',
-      'updater_id',
-    ] as const
-
-    stringFields.forEach(field => {
-      if (sanitized[field] && typeof sanitized[field] === 'string') {
-        sanitized[field] = this.sanitizeStringField(sanitized[field])
+    // Sanitize all potential string fields using Danbooru-specific list
+    for (const field of DANBOORU_STRING_FIELDS) {
+      const value = sanitized[field as keyof typeof sanitized] as
+        | string
+        | undefined
+      if (value && typeof value === 'string') {
+        sanitized[field as keyof typeof sanitized] =
+          this.sanitizeStringField(value)
       }
-    })
+    }
 
     return sanitized
   }
