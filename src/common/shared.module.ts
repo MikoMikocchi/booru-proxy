@@ -4,7 +4,7 @@ import { CacheModule } from '@nestjs/cache-manager'
 import { RedisModule } from './redis/redis.module'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { ValidationModule } from './validation/validation.module'
-import { parseRedisUrl } from './redis/utils/redis.util'
+import { parseRedisUrl } from './redis/utils/redis-config.util'
 
 @Global()
 @Module({
@@ -14,7 +14,7 @@ import { parseRedisUrl } from './redis/utils/redis.util'
       useFactory: (configService: ConfigService) => ({
         store:
           configService.get('CACHE_BACKEND') === 'memcached'
-            ? 'memory'
+            ? 'memcached'
             : 'redis',
         ttl: configService.get('CACHE_TTL_SECONDS', 3600) / 1000, // Convert to seconds for cache-manager
         max: 100, // Max items in cache

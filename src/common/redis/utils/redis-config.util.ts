@@ -11,7 +11,7 @@ export const ignoreServerIdentity = (
 ) => undefined
 /* eslint-enable @typescript-eslint/no-unused-vars */
 
-function parseRedisUrl(redisUrl: string): URL {
+export function parseRedisUrl(redisUrl: string): URL {
   try {
     const url = new URL(redisUrl)
     if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
